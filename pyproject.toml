@@ -20,6 +20,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Libraries",
     "Topic :: Terminals",
 ]
@@ -31,7 +32,16 @@ rich = ["rich>=13.0"]
 notebook = ["ipywidgets>=8.0", "tqdm>=4.65"]
 marimo = ["marimo>=0.10"]
 all = ["tqdm>=4.65", "rich>=13.0", "ipywidgets>=8.0", "marimo>=0.10"]
-dev = ["pytest>=7.0", "ruff>=0.6", "tqdm>=4.65", "rich>=13.0", "ipywidgets>=8.0", "marimo>=0.10"]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0",
+    "ruff>=0.6",
+    "tqdm>=4.65",
+    "rich>=13.0",
+    "ipywidgets>=8.0",
+    "marimo>=0.10",
+]
 
 [project.urls]
 Homepage = "https://github.com/mluttikh/everbar"
