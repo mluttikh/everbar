@@ -44,5 +44,3 @@ everbar.set_default_backend("terminal")    # module-wide
 ## How it picks a backend
 
 `everbar.detect_environment()` returns one of: `marimo`, `colab`, `kaggle`, `vscode_notebook`, `jupyter`, `jupyter_qt`, `spyder`, `databricks`, `pyodide`, `ipython_terminal`, `terminal`, `non_tty`. Each maps to a backend, with graceful fallback to a log-line text mode when nothing better is available.
-
-See `RESEARCH.md` for the full design notes.
