@@ -1,0 +1,115 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "everbar"
+version = "0.1.0"
+description = "A progress bar that works everywhere — terminal, Jupyter, VS Code, Colab, Marimo."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+keywords = ["progress", "progressbar", "tqdm", "jupyter", "marimo", "notebook"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Terminals",
+]
+dependencies = []
+
+[project.optional-dependencies]
+tqdm = ["tqdm>=4.65"]
+rich = ["rich>=13.0"]
+notebook = ["ipywidgets>=8.0", "tqdm>=4.65"]
+marimo = ["marimo>=0.10"]
+all = ["tqdm>=4.65", "rich>=13.0", "ipywidgets>=8.0", "marimo>=0.10"]
+dev = ["pytest>=7.0", "ruff>=0.6", "tqdm>=4.65", "rich>=13.0", "ipywidgets>=8.0", "marimo>=0.10"]
+
+[project.urls]
+Homepage = "https://github.com/mluttikh/everbar"
+Issues = "https://github.com/mluttikh/everbar/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/everbar"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 80
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort
+    "N",     # pep8-naming
+    "D",     # pydocstyle (google style — see [lint.pydocstyle] below)
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "A",     # flake8-builtins (don't shadow builtins)
+    "ANN",   # flake8-annotations (require type hints)
+    "ARG",   # flake8-unused-arguments
+    "C4",    # flake8-comprehensions
+    "EM",    # flake8-errmsg (extract msgs before raise)
+    "FBT",   # flake8-boolean-trap (bool params should be kw-only)
+    "INP",   # flake8-no-pep420 (require __init__.py)
+    "ISC",   # flake8-implicit-str-concat
+    "LOG",   # flake8-logging
+    "PIE",   # flake8-pie
+    "PT",    # flake8-pytest-style
+    "RET",   # flake8-return
+    "SIM",   # flake8-simplify
+    "SLF",   # flake8-self (don't access private from outside)
+    "T20",   # flake8-print (no stray print())
+    "TC",    # flake8-type-checking
+    "TRY",   # tryceratops (exception handling)
+    "PERF",  # perflint
+    "FURB",  # refurb (modernization)
+    "PL",    # pylint subset (E/W/R/C)
+    "ERA",   # eradicate (commented-out code)
+    "RUF",   # ruff-specific (includes RUF100: flag unused noqa directives)
+]
+ignore = [
+    "TRY003",  # raise long-message — fine for small exceptions here
+    "EM101",   # raw-string in exception is OK for tiny one-offs
+    "EM102",   # f-string in exception is OK
+    "ISC001",  # conflicts with the formatter
+    "D203",    # one-blank-line-before-class (conflicts with D211)
+    "D213",    # multi-line-summary-second-line (conflicts with D212)
+    "ANN401",  # `Any` is permitted (used for **kwargs, __exit__, opaque inner)
+    "PLC0415", # imports inside functions — intentional for lazy soft-deps
+    "PLR0911", # too-many-return-statements — fine for dispatch funcs
+    "PLR0912", # too-many-branches — same
+    "PLR0913", # too-many-arguments — Progress legitimately has several
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [
+    "E501",    # long lines OK
+    "D",       # tests don't need docstrings
+    "S101",    # asserts are the point
+    "SLF001",  # accessing _private members in tests is fine
+    "PT011",   # broad pytest.raises is fine
+    "PLR2004", # magic numbers in assertions are fine
+    "ARG",     # pytest fixtures may pass unused args
+    "ANN",     # tests don't need full type annotations
+]
