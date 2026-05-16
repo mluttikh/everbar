@@ -142,6 +142,47 @@ class TqdmBackend:
         self._inner.update(n)
 
 
+class RichBackend:
+    """Wraps ``rich.progress.Progress``.
+
+    Opt-in only — selected via ``backend="rich"`` or ``EVERBAR_BACKEND=rich``.
+    Extra kwargs are forwarded to ``rich.progress.Progress`` (e.g. pass
+    ``console=Console(file=...)`` to redirect output in tests).
+    """
+
+    def __init__(
+        self,
+        iterable: Iterable[Any] | None = None,
+        total: int | None = None,
+        desc: str = "",
+        **kwargs: Any,
+    ) -> None:
+        from rich.progress import Progress as _RichProgress
+
+        self._iterable = iterable
+        self._total = total if total is not None else _len_or_none(iterable)
+        self._desc = desc
+        self._progress = _RichProgress(**kwargs)
+        self._task_id: Any = None
+
+    def __enter__(self) -> Self:
+        self._progress.__enter__()
+        self._task_id = self._progress.add_task(self._desc, total=self._total)
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> Any:
+        return self._progress.__exit__(exc_type, exc_val, exc_tb)
+
+    def __iter__(self) -> Iterator[Any]:
+        with self:
+            for item in self._iterable or ():
+                yield item
+                self.update(1)
+
+    def update(self, n: int = 1) -> None:
+        self._progress.update(self._task_id, advance=n)
+
+
 class MarimoBackend:
     """Marimo-native bar via ``marimo.status.progress_bar``."""
 

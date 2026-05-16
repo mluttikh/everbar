@@ -7,7 +7,7 @@ spam the terminal during CI.
 import io
 
 from everbar import Progress, set_default_backend
-from everbar._backends import FallbackBackend, NullBackend
+from everbar._backends import FallbackBackend, NullBackend, RichBackend
 
 
 def test_iterator_form_yields_all_items():
@@ -48,6 +48,29 @@ def test_set_default_backend(monkeypatch):
         assert isinstance(p._impl, FallbackBackend)
     finally:
         set_default_backend(None)
+
+
+def test_rich_backend_selected():
+    p = Progress([1, 2, 3], backend="rich")
+    assert isinstance(p._impl, RichBackend)
+
+
+def test_rich_iterator_yields_all_items():
+    from rich.console import Console
+
+    console = Console(file=io.StringIO(), force_terminal=False)
+    bar = RichBackend([1, 2, 3], total=3, desc="x", console=console)
+    assert list(bar) == [1, 2, 3]
+
+
+def test_rich_context_manager_updates():
+    from rich.console import Console
+
+    console = Console(file=io.StringIO(), force_terminal=False)
+    bar = RichBackend(total=5, desc="x", console=console)
+    with bar:
+        for _ in range(5):
+            bar.update(1)
 
 
 def test_fallback_writes_lines(monkeypatch):

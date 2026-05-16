@@ -17,7 +17,8 @@ def set_default_backend(name: str | None) -> None:
 
     Valid names: ``"marimo"``, ``"jupyter"``, ``"colab"``, ``"kaggle"``,
     ``"vscode_notebook"``, ``"jupyter_qt"``, ``"spyder"``, ``"databricks"``,
-    ``"ipython_terminal"``, ``"terminal"``, ``"pyodide"``, ``"non_tty"``.
+    ``"ipython_terminal"``, ``"terminal"``, ``"pyodide"``, ``"non_tty"``,
+    ``"rich"``.
     """
     global _DEFAULT_BACKEND  # noqa: PLW0603 — module-level pin is the API
     _DEFAULT_BACKEND = name
@@ -69,6 +70,8 @@ class Progress:
         common = {"total": self._total, "desc": self._desc, **self._kwargs}
 
         try:
+            if self._env == "rich":
+                return _backends.RichBackend(self._iterable, **common)
             if self._env == "marimo":
                 return _backends.MarimoBackend(self._iterable, **common)
             if self._env in _NOTEBOOK_ENVS:
