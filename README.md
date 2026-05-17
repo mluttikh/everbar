@@ -2,7 +2,7 @@
 
 A progress bar that works **everywhere** — terminal, Jupyter, JupyterLab, VS Code notebooks, Google Colab, Marimo, Pyodide, and CI logs. One API, the right backend per environment.
 
-> Status: 0.1.0 — alpha. API may shift.
+> Status: 0.2.0 — alpha. API may shift.
 
 ## Install
 
