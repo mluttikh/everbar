@@ -99,3 +99,11 @@ class Progress:
 
     def update(self, n: int = 1) -> None:
         self._impl.update(n)
+
+    def set_postfix(self, **kwargs: Any) -> None:
+        """Set a live key/value suffix shown next to the bar.
+
+        Numbers are formatted compactly (``loss=0.42, lr=0.001``).
+        Calling again replaces the previous postfix.
+        """
+        self._impl.set_postfix(**kwargs)

@@ -26,6 +26,21 @@ with Progress(total=100, desc="Steps") as bar:
         bar.update(1)
 ```
 
+### Live metrics with `set_postfix`
+
+Show a live key/value suffix next to the bar — useful in training loops:
+
+```python
+with Progress(total=epochs, desc="Training") as bar:
+    for epoch in range(epochs):
+        loss, acc = train_one_epoch()
+        bar.set_postfix(loss=loss, acc=acc)
+        bar.update(1)
+```
+
+Calling `set_postfix` again replaces the previous suffix. Floats are
+formatted compactly (e.g. `loss=0.424, acc=0.91`).
+
 ## Overrides
 
 ```python

@@ -5,6 +5,7 @@ Each backend implements the same minimal surface:
     __enter__ / __exit__   — context-manager use
     __iter__               — iterator-wrapper use
     update(n=1)            — manual advance
+    set_postfix(**kwargs)  — live key/value suffix (e.g. loss=0.42)
 
 Backends are constructed lazily by ``Progress``. Optional third-party
 dependencies (``tqdm``, ``marimo``) are imported only inside the backend
@@ -25,6 +26,14 @@ def _len_or_none(obj: Any) -> int | None:
         return None
 
 
+def _format_postfix(items: dict[str, Any]) -> str:
+    parts = [
+        f"{k}={v:.3g}" if isinstance(v, float) else f"{k}={v}"
+        for k, v in items.items()
+    ]
+    return ", ".join(parts)
+
+
 class NullBackend(nullcontext):
     """No-op backend used when ``disable=True``."""
 
@@ -36,6 +45,9 @@ class NullBackend(nullcontext):
         return iter(self._iterable or ())
 
     def update(self, n: int = 1) -> None:  # noqa: ARG002 — protocol shape
+        return None
+
+    def set_postfix(self, **kwargs: Any) -> None:  # noqa: ARG002 — protocol shape
         return None
 
 
@@ -64,6 +76,7 @@ class FallbackBackend:
         self._t0 = 0.0
         self._last_log = 0.0
         self._entered = False
+        self._postfix = ""
 
     def __enter__(self) -> Self:
         self._t0 = time.monotonic()
@@ -89,6 +102,9 @@ class FallbackBackend:
             self._last_log = now
             self._log(final=False)
 
+    def set_postfix(self, **kwargs: Any) -> None:
+        self._postfix = _format_postfix(kwargs)
+
     def _log(self, *, final: bool) -> None:
         elapsed = time.monotonic() - self._t0 if self._t0 else 0.0
         if self._total:
@@ -99,9 +115,10 @@ class FallbackBackend:
             total_str = "?"
         marker = "done" if final else "progress"
         desc = f" {self._desc}" if self._desc else ""
+        postfix = f" [{self._postfix}]" if self._postfix else ""
         line = (
             f"[{marker}]{desc} {self._n}/{total_str}"
-            f" ({pct}) elapsed={elapsed:.1f}s"
+            f" ({pct}) elapsed={elapsed:.1f}s{postfix}"
         )
         print(line, file=self._stream, flush=True)
 
@@ -140,6 +157,9 @@ class TqdmBackend:
 
     def update(self, n: int = 1) -> None:
         self._inner.update(n)
+
+    def set_postfix(self, **kwargs: Any) -> None:
+        self._inner.set_postfix(**kwargs)
 
 
 class RichBackend:
@@ -182,6 +202,18 @@ class RichBackend:
     def update(self, n: int = 1) -> None:
         self._progress.update(self._task_id, advance=n)
 
+    def set_postfix(self, **kwargs: Any) -> None:
+        # Rich parses [...] as markup, so escape the auto-formatted postfix
+        # to avoid stripping values like loss=[1,2,3]. Description stays
+        # unescaped — callers may pass intentional markup in desc.
+        from rich.markup import escape
+
+        postfix = _format_postfix(kwargs)
+        suffix = f" | {escape(postfix)}" if postfix else ""
+        self._progress.update(
+            self._task_id, description=f"{self._desc}{suffix}"
+        )
+
 
 class MarimoBackend:
     """Marimo-native bar via ``marimo.status.progress_bar``."""
@@ -213,3 +245,7 @@ class MarimoBackend:
 
     def update(self, n: int = 1) -> None:
         self._inner.update(n)
+
+    def set_postfix(self, **kwargs: Any) -> None:
+        subtitle = _format_postfix(kwargs) or None
+        self._inner.update(increment=0, subtitle=subtitle)
