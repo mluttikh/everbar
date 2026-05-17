@@ -294,9 +294,7 @@ class MarimoBackend:
         if self._mode == "spinner":
             self._tracker.update(subtitle=self._spinner_subtitle())
         else:
-            self._tracker.update(
-                increment=0, subtitle=self._postfix or None
-            )
+            self._tracker.update(increment=0, subtitle=self._postfix or None)
 
     def _spinner_subtitle(self) -> str:
         parts = [f"{self._n} items"]
