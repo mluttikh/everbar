@@ -216,7 +216,12 @@ class RichBackend:
 
 
 class MarimoBackend:
-    """Marimo-native bar via ``marimo.status.progress_bar``."""
+    """Marimo-native bar via ``marimo.status.progress_bar``.
+
+    Falls back to ``marimo.status.spinner`` when the total is unknown,
+    since Marimo's progress bar requires a known total and has no
+    indeterminate mode. The spinner shows a running count in its subtitle.
+    """
 
     def __init__(
         self,
@@ -227,25 +232,74 @@ class MarimoBackend:
     ) -> None:
         import marimo as mo
 
-        self._inner = mo.status.progress_bar(
-            iterable,
-            total=total if total is not None else _len_or_none(iterable),
-            title=desc or None,
-        )
+        self._iterable = iterable
+        self._desc = desc
+        self._postfix = ""
+        self._n = 0
+
+        resolved_total = total if total is not None else _len_or_none(iterable)
+        if resolved_total is None:
+            self._mode = "spinner"
+            self._mo = mo
+            # remove_on_exit=True so the animation stops; we render a
+            # static "done" line in __exit__ since Marimo's spinner has
+            # no done state (upstream TODO).
+            self._inner: Any = mo.status.spinner(
+                title=desc or None, remove_on_exit=True
+            )
+        else:
+            self._mode = "bar"
+            self._inner = mo.status.progress_bar(
+                iterable, total=resolved_total, title=desc or None
+            )
+        self._tracker: Any = None
 
     def __enter__(self) -> Self:
-        self._inner.__enter__()
+        self._tracker = self._inner.__enter__()
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> Any:
-        return self._inner.__exit__(exc_type, exc_val, exc_tb)
+        result = self._inner.__exit__(exc_type, exc_val, exc_tb)
+        if self._mode == "spinner" and exc_type is None:
+            parts = [self._desc] if self._desc else []
+            parts.append(f"{self._n} items")
+            if self._postfix:
+                parts.append(self._postfix)
+            self._mo.output.append(self._mo.md(f"Done — {' — '.join(parts)}"))
+        return result
 
     def __iter__(self) -> Iterator[Any]:
-        return iter(self._inner)
+        if self._mode == "bar":
+            # progress_bar drives its own update() per item
+            return iter(self._inner)
+        # Spinner has no built-in iter; drive it ourselves so we can
+        # stream unknown-length iterables without materializing.
+        return self._spinner_iter()
+
+    def _spinner_iter(self) -> Iterator[Any]:
+        with self:
+            for item in self._iterable or ():
+                yield item
+                self.update(1)
 
     def update(self, n: int = 1) -> None:
-        self._inner.update(n)
+        self._n += n
+        if self._mode == "spinner":
+            self._tracker.update(subtitle=self._spinner_subtitle())
+        else:
+            self._tracker.update(n)
 
     def set_postfix(self, **kwargs: Any) -> None:
-        subtitle = _format_postfix(kwargs) or None
-        self._inner.update(increment=0, subtitle=subtitle)
+        self._postfix = _format_postfix(kwargs)
+        if self._mode == "spinner":
+            self._tracker.update(subtitle=self._spinner_subtitle())
+        else:
+            self._tracker.update(
+                increment=0, subtitle=self._postfix or None
+            )
+
+    def _spinner_subtitle(self) -> str:
+        parts = [f"{self._n} items"]
+        if self._postfix:
+            parts.append(self._postfix)
+        return " | ".join(parts)
