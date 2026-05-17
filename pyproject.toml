@@ -57,6 +57,7 @@ testpaths = ["tests"]
 line-length = 80
 target-version = "py311"
 src = ["src", "tests"]
+extend-exclude = ["notebooks"]
 
 [tool.ruff.format]
 quote-style = "double"

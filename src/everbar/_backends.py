@@ -5,6 +5,7 @@ Each backend implements the same minimal surface:
     __enter__ / __exit__   — context-manager use
     __iter__               — iterator-wrapper use
     update(n=1)            — manual advance
+    set_postfix(**kwargs)  — live key/value suffix (e.g. loss=0.42)
 
 Backends are constructed lazily by ``Progress``. Optional third-party
 dependencies (``tqdm``, ``marimo``) are imported only inside the backend
@@ -25,6 +26,14 @@ def _len_or_none(obj: Any) -> int | None:
         return None
 
 
+def _format_postfix(items: dict[str, Any]) -> str:
+    parts = [
+        f"{k}={v:.3g}" if isinstance(v, float) else f"{k}={v}"
+        for k, v in items.items()
+    ]
+    return ", ".join(parts)
+
+
 class NullBackend(nullcontext):
     """No-op backend used when ``disable=True``."""
 
@@ -36,6 +45,9 @@ class NullBackend(nullcontext):
         return iter(self._iterable or ())
 
     def update(self, n: int = 1) -> None:  # noqa: ARG002 — protocol shape
+        return None
+
+    def set_postfix(self, **kwargs: Any) -> None:  # noqa: ARG002 — protocol shape
         return None
 
 
@@ -64,6 +76,7 @@ class FallbackBackend:
         self._t0 = 0.0
         self._last_log = 0.0
         self._entered = False
+        self._postfix = ""
 
     def __enter__(self) -> Self:
         self._t0 = time.monotonic()
@@ -89,6 +102,9 @@ class FallbackBackend:
             self._last_log = now
             self._log(final=False)
 
+    def set_postfix(self, **kwargs: Any) -> None:
+        self._postfix = _format_postfix(kwargs)
+
     def _log(self, *, final: bool) -> None:
         elapsed = time.monotonic() - self._t0 if self._t0 else 0.0
         if self._total:
@@ -99,9 +115,10 @@ class FallbackBackend:
             total_str = "?"
         marker = "done" if final else "progress"
         desc = f" {self._desc}" if self._desc else ""
+        postfix = f" [{self._postfix}]" if self._postfix else ""
         line = (
             f"[{marker}]{desc} {self._n}/{total_str}"
-            f" ({pct}) elapsed={elapsed:.1f}s"
+            f" ({pct}) elapsed={elapsed:.1f}s{postfix}"
         )
         print(line, file=self._stream, flush=True)
 
@@ -141,9 +158,70 @@ class TqdmBackend:
     def update(self, n: int = 1) -> None:
         self._inner.update(n)
 
+    def set_postfix(self, **kwargs: Any) -> None:
+        self._inner.set_postfix(**kwargs)
+
+
+class RichBackend:
+    """Wraps ``rich.progress.Progress``.
+
+    Opt-in only — selected via ``backend="rich"`` or ``EVERBAR_BACKEND=rich``.
+    Extra kwargs are forwarded to ``rich.progress.Progress`` (e.g. pass
+    ``console=Console(file=...)`` to redirect output in tests).
+    """
+
+    def __init__(
+        self,
+        iterable: Iterable[Any] | None = None,
+        total: int | None = None,
+        desc: str = "",
+        **kwargs: Any,
+    ) -> None:
+        from rich.progress import Progress as _RichProgress
+
+        self._iterable = iterable
+        self._total = total if total is not None else _len_or_none(iterable)
+        self._desc = desc
+        self._progress = _RichProgress(**kwargs)
+        self._task_id: Any = None
+
+    def __enter__(self) -> Self:
+        self._progress.__enter__()
+        self._task_id = self._progress.add_task(self._desc, total=self._total)
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> Any:
+        return self._progress.__exit__(exc_type, exc_val, exc_tb)
+
+    def __iter__(self) -> Iterator[Any]:
+        with self:
+            for item in self._iterable or ():
+                yield item
+                self.update(1)
+
+    def update(self, n: int = 1) -> None:
+        self._progress.update(self._task_id, advance=n)
+
+    def set_postfix(self, **kwargs: Any) -> None:
+        # Rich parses [...] as markup, so escape the auto-formatted postfix
+        # to avoid stripping values like loss=[1,2,3]. Description stays
+        # unescaped — callers may pass intentional markup in desc.
+        from rich.markup import escape
+
+        postfix = _format_postfix(kwargs)
+        suffix = f" | {escape(postfix)}" if postfix else ""
+        self._progress.update(
+            self._task_id, description=f"{self._desc}{suffix}"
+        )
+
 
 class MarimoBackend:
-    """Marimo-native bar via ``marimo.status.progress_bar``."""
+    """Marimo-native bar via ``marimo.status.progress_bar``.
+
+    Falls back to ``marimo.status.spinner`` when the total is unknown,
+    since Marimo's progress bar requires a known total and has no
+    indeterminate mode. The spinner shows a running count in its subtitle.
+    """
 
     def __init__(
         self,
@@ -154,21 +232,72 @@ class MarimoBackend:
     ) -> None:
         import marimo as mo
 
-        self._inner = mo.status.progress_bar(
-            iterable,
-            total=total if total is not None else _len_or_none(iterable),
-            title=desc or None,
-        )
+        self._iterable = iterable
+        self._desc = desc
+        self._postfix = ""
+        self._n = 0
+
+        resolved_total = total if total is not None else _len_or_none(iterable)
+        if resolved_total is None:
+            self._mode = "spinner"
+            self._mo = mo
+            # remove_on_exit=True so the animation stops; we render a
+            # static "done" line in __exit__ since Marimo's spinner has
+            # no done state (upstream TODO).
+            self._inner: Any = mo.status.spinner(
+                title=desc or None, remove_on_exit=True
+            )
+        else:
+            self._mode = "bar"
+            self._inner = mo.status.progress_bar(
+                iterable, total=resolved_total, title=desc or None
+            )
+        self._tracker: Any = None
 
     def __enter__(self) -> Self:
-        self._inner.__enter__()
+        self._tracker = self._inner.__enter__()
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> Any:
-        return self._inner.__exit__(exc_type, exc_val, exc_tb)
+        result = self._inner.__exit__(exc_type, exc_val, exc_tb)
+        if self._mode == "spinner" and exc_type is None:
+            parts = [self._desc] if self._desc else []
+            parts.append(f"{self._n} items")
+            if self._postfix:
+                parts.append(self._postfix)
+            self._mo.output.append(self._mo.md(f"Done — {' — '.join(parts)}"))
+        return result
 
     def __iter__(self) -> Iterator[Any]:
-        return iter(self._inner)
+        if self._mode == "bar":
+            # progress_bar drives its own update() per item
+            return iter(self._inner)
+        # Spinner has no built-in iter; drive it ourselves so we can
+        # stream unknown-length iterables without materializing.
+        return self._spinner_iter()
+
+    def _spinner_iter(self) -> Iterator[Any]:
+        with self:
+            for item in self._iterable or ():
+                yield item
+                self.update(1)
 
     def update(self, n: int = 1) -> None:
-        self._inner.update(n)
+        self._n += n
+        if self._mode == "spinner":
+            self._tracker.update(subtitle=self._spinner_subtitle())
+        else:
+            self._tracker.update(n)
+
+    def set_postfix(self, **kwargs: Any) -> None:
+        self._postfix = _format_postfix(kwargs)
+        if self._mode == "spinner":
+            self._tracker.update(subtitle=self._spinner_subtitle())
+        else:
+            self._tracker.update(increment=0, subtitle=self._postfix or None)
+
+    def _spinner_subtitle(self) -> str:
+        parts = [f"{self._n} items"]
+        if self._postfix:
+            parts.append(self._postfix)
+        return " | ".join(parts)
