@@ -2,9 +2,11 @@
 
 import os
 from collections.abc import Iterable, Iterator
-from typing import Any, Self
+from typing import Any, Generic, Self, TypeVar
 
 from everbar._detect import detect_environment
+
+T = TypeVar("T")
 
 _DEFAULT_BACKEND: str | None = None
 
@@ -24,12 +26,12 @@ def set_default_backend(name: str | None) -> None:
     _DEFAULT_BACKEND = name
 
 
-class Progress:
+class Progress(Generic[T]):
     """A progress bar that adapts to its environment.
 
-    Iterator form:
+    Iterator form (item type is preserved — ``x`` is inferred as ``int``):
 
-        for x in Progress(items, desc="Loading"):
+        for x in Progress(range(10), desc="Loading"):
             work(x)
 
     Context-manager form:
@@ -42,7 +44,7 @@ class Progress:
 
     def __init__(
         self,
-        iterable: Iterable[Any] | None = None,
+        iterable: Iterable[T] | None = None,
         total: int | None = None,
         desc: str = "",
         backend: str | None = None,
@@ -87,7 +89,7 @@ class Progress:
 
         return _backends.FallbackBackend(self._iterable, **common)
 
-    def __iter__(self) -> Iterator[Any]:
+    def __iter__(self) -> Iterator[T]:
         return iter(self._impl)
 
     def __enter__(self) -> Self:
