@@ -163,5 +163,24 @@ def _(Progress):
     return
 
 
+@app.cell
+def _(mo):
+    mo.md("""
+    ## 9. Failure state (one worker errors, job continues)
+    """)
+    return
+
+
+@app.cell
+def _(Progress, time):
+    with Progress(total=10, desc="Batch") as _bar:
+        for _i in range(10):
+            time.sleep(0.05)
+            if _i == 5:
+                _bar.fail()
+            _bar.update(1)
+    return
+
+
 if __name__ == "__main__":
     app.run()
