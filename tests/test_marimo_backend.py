@@ -98,3 +98,29 @@ def test_bar_mode_no_iterable_supports_manual_updates():
         for _ in range(10):
             bar.update(1)
         assert bar._inner.progress.current == 10
+
+
+def test_bar_fail_prefixes_title():
+    with MarimoBackend(total=5, desc="loading") as bar:
+        bar.fail()
+    assert bar._inner.progress.title == "[FAILING] loading"
+
+
+def test_spinner_fail_prefixes_title():
+    with MarimoBackend(desc="loading") as bar:
+        bar.fail()
+    assert bar._inner.spinner.title == "[FAILING] loading"
+
+
+def test_fail_without_desc_uses_bare_marker():
+    with MarimoBackend(total=5) as bar:
+        bar.fail()
+    assert bar._inner.progress.title == "[FAILING]"
+
+
+def test_fail_only_announces_once():
+    with MarimoBackend(total=5, desc="x") as bar:
+        bar.fail()
+        bar.fail()
+        bar.fail()
+    assert bar._failure_announced is True

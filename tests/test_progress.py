@@ -7,7 +7,12 @@ spam the terminal during CI.
 import io
 
 from everbar import Progress, set_default_backend
-from everbar._backends import FallbackBackend, NullBackend, RichBackend
+from everbar._backends import (
+    FallbackBackend,
+    NullBackend,
+    RichBackend,
+    TqdmBackend,
+)
 
 
 def test_iterator_form_yields_all_items():
@@ -120,3 +125,53 @@ def test_set_postfix_via_facade():
         p.set_postfix(loss=0.5)
         p.update(1)
     assert p._impl._postfix == "loss=0.5"  # type: ignore[attr-defined]
+
+
+def test_fail_on_null_backend_is_noop():
+    p = Progress([1, 2, 3], disable=True)
+    p.fail()
+    assert list(p) == [1, 2, 3]
+
+
+def test_fallback_fail_marks_log_lines():
+    buf = io.StringIO()
+    bar = FallbackBackend(total=3, desc="x", min_interval=0.0, stream=buf)
+    with bar:
+        bar.update(1)
+        bar.fail()
+        bar.update(1)
+    output = buf.getvalue()
+    assert "[failing]" in output
+
+
+def test_rich_fail_prepends_marker_to_description():
+    from rich.console import Console
+
+    console = Console(file=io.StringIO(), force_terminal=False)
+    bar = RichBackend(total=3, desc="Loading", console=console)
+    with bar:
+        bar.fail()
+        description = bar._progress.tasks[bar._task_id].description
+    assert "FAIL" in description
+    assert "Loading" in description
+
+
+def test_tqdm_fail_sets_red_colour():
+    buf = io.StringIO()
+    bar = TqdmBackend(total=3, desc="x", file=buf, disable=False)
+    with bar:
+        bar.fail()
+    assert bar._inner.colour == "red"
+
+
+def test_rich_fail_composes_with_postfix():
+    from rich.console import Console
+
+    console = Console(file=io.StringIO(), force_terminal=False)
+    bar = RichBackend(total=3, desc="Loading", console=console)
+    with bar:
+        bar.set_postfix(loss=0.1)
+        bar.fail()
+        description = bar._progress.tasks[bar._task_id].description
+    assert "FAIL" in description
+    assert "loss=0.1" in description

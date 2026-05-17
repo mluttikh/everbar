@@ -6,6 +6,7 @@ Each backend implements the same minimal surface:
     __iter__               — iterator-wrapper use
     update(n=1)            — manual advance
     set_postfix(**kwargs)  — live key/value suffix (e.g. loss=0.42)
+    fail()                 — mark the bar as failing (sticky)
 
 Backends are constructed lazily by ``Progress``. Optional third-party
 dependencies (``tqdm``, ``marimo``) are imported only inside the backend
@@ -50,6 +51,9 @@ class NullBackend(nullcontext):
     def set_postfix(self, **kwargs: Any) -> None:  # noqa: ARG002 — protocol shape
         return None
 
+    def fail(self) -> None:
+        return None
+
 
 class FallbackBackend:
     r"""Log-line backend for non-TTY environments.
@@ -77,6 +81,7 @@ class FallbackBackend:
         self._last_log = 0.0
         self._entered = False
         self._postfix = ""
+        self._failing = False
 
     def __enter__(self) -> Self:
         self._t0 = time.monotonic()
@@ -105,6 +110,10 @@ class FallbackBackend:
     def set_postfix(self, **kwargs: Any) -> None:
         self._postfix = _format_postfix(kwargs)
 
+    def fail(self) -> None:
+        self._failing = True
+        self._log(final=False)
+
     def _log(self, *, final: bool) -> None:
         elapsed = time.monotonic() - self._t0 if self._t0 else 0.0
         if self._total:
@@ -113,7 +122,12 @@ class FallbackBackend:
         else:
             pct = "?"
             total_str = "?"
-        marker = "done" if final else "progress"
+        if self._failing:
+            marker = "failing"
+        elif final:
+            marker = "done"
+        else:
+            marker = "progress"
         desc = f" {self._desc}" if self._desc else ""
         postfix = f" [{self._postfix}]" if self._postfix else ""
         line = (
@@ -161,6 +175,10 @@ class TqdmBackend:
     def set_postfix(self, **kwargs: Any) -> None:
         self._inner.set_postfix(**kwargs)
 
+    def fail(self) -> None:
+        self._inner.colour = "red"
+        self._inner.refresh()
+
 
 class RichBackend:
     """Wraps ``rich.progress.Progress``.
@@ -184,6 +202,8 @@ class RichBackend:
         self._desc = desc
         self._progress = _RichProgress(**kwargs)
         self._task_id: Any = None
+        self._postfix = ""
+        self._failing = False
 
     def __enter__(self) -> Self:
         self._progress.__enter__()
@@ -203,16 +223,22 @@ class RichBackend:
         self._progress.update(self._task_id, advance=n)
 
     def set_postfix(self, **kwargs: Any) -> None:
+        self._postfix = _format_postfix(kwargs)
+        self._progress.update(self._task_id, description=self._build_desc())
+
+    def fail(self) -> None:
+        self._failing = True
+        self._progress.update(self._task_id, description=self._build_desc())
+
+    def _build_desc(self) -> str:
         # Rich parses [...] as markup, so escape the auto-formatted postfix
         # to avoid stripping values like loss=[1,2,3]. Description stays
         # unescaped — callers may pass intentional markup in desc.
         from rich.markup import escape
 
-        postfix = _format_postfix(kwargs)
-        suffix = f" | {escape(postfix)}" if postfix else ""
-        self._progress.update(
-            self._task_id, description=f"{self._desc}{suffix}"
-        )
+        prefix = "[red]FAIL[/red] " if self._failing else ""
+        suffix = f" | {escape(self._postfix)}" if self._postfix else ""
+        return f"{prefix}{self._desc}{suffix}"
 
 
 class MarimoBackend:
@@ -232,15 +258,17 @@ class MarimoBackend:
     ) -> None:
         import marimo as mo
 
+        self._mo = mo
         self._iterable = iterable
         self._desc = desc
         self._postfix = ""
         self._n = 0
+        self._failing = False
+        self._failure_announced = False
 
         resolved_total = total if total is not None else _len_or_none(iterable)
         if resolved_total is None:
             self._mode = "spinner"
-            self._mo = mo
             # remove_on_exit=True so the animation stops; we render a
             # static "done" line in __exit__ since Marimo's spinner has
             # no done state (upstream TODO).
@@ -295,6 +323,32 @@ class MarimoBackend:
             self._tracker.update(subtitle=self._spinner_subtitle())
         else:
             self._tracker.update(increment=0, subtitle=self._postfix or None)
+
+    def fail(self) -> None:
+        self._failing = True
+        if self._tracker is not None:
+            # Marimo's progress UI can't recolor the bar, so we rewrite the
+            # title with an uppercase tag and append a compact inline badge
+            # once. PyMC's approach (custom HTML bar via mo.output.replace)
+            # is the only way to recolor the bar itself.
+            title = f"[FAILING] {self._desc}" if self._desc else "[FAILING]"
+            if self._mode == "spinner":
+                self._tracker.update(title=title)
+            else:
+                self._tracker.update(increment=0, title=title)
+            if not self._failure_announced:
+                label = f"FAILED — {self._desc}" if self._desc else "FAILED"
+                badge = (
+                    '<span style="display:inline-block;'
+                    "padding:2px 8px;margin-top:4px;"
+                    "background:#d62728;color:white;"
+                    "border-radius:4px;font-weight:600;"
+                    "font-size:0.85em;"
+                    'font-family:system-ui,sans-serif;">'
+                    f"{label}</span>"
+                )
+                self._mo.output.append(self._mo.Html(badge))
+                self._failure_announced = True
 
     def _spinner_subtitle(self) -> str:
         parts = [f"{self._n} items"]
