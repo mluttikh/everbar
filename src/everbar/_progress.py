@@ -40,6 +40,12 @@ class Progress(Generic[T]):
             for _ in range(100):
                 do_step()
                 bar.update(1)
+
+    Pass ``unit`` to label what's being counted (``"files"``, ``"B"``).
+    Rendering is backend-specific: tqdm shows it in the rate column
+    (``5files/s``), Rich adds a count + unit column, Marimo shows it in
+    the bar subtitle, and the non-TTY fallback inlines it in the log
+    line (``5/10 files (50%)``).
     """
 
     def __init__(
@@ -50,11 +56,13 @@ class Progress(Generic[T]):
         backend: str | None = None,
         *,
         disable: bool = False,
+        unit: str | None = None,
         **kwargs: Any,
     ) -> None:
         self._iterable = iterable
         self._total = total
         self._desc = desc
+        self._unit = unit
         self._kwargs = kwargs
 
         chosen = (
@@ -69,7 +77,12 @@ class Progress(Generic[T]):
         if disable:
             return _backends.NullBackend(iterable=self._iterable)
 
-        common = {"total": self._total, "desc": self._desc, **self._kwargs}
+        common = {
+            "total": self._total,
+            "desc": self._desc,
+            "unit": self._unit,
+            **self._kwargs,
+        }
 
         try:
             if self._env == "rich":

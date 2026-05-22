@@ -175,3 +175,50 @@ def test_rich_fail_composes_with_postfix():
         description = bar._progress.tasks[bar._task_id].description
     assert "FAIL" in description
     assert "loss=0.1" in description
+
+
+def test_fallback_renders_unit():
+    buf = io.StringIO()
+    bar = FallbackBackend(total=4, min_interval=0.0, stream=buf, unit="files")
+    with bar:
+        bar.update(2)
+    output = buf.getvalue()
+    assert "2/4 files" in output
+
+
+def test_rich_unit_does_not_crash():
+    """Regression: passing unit used to TypeError because rich.Progress
+    rejects an unknown kwarg. It should now route into a custom column."""
+    from rich.console import Console
+
+    console = Console(file=io.StringIO(), force_terminal=False)
+    bar = RichBackend(total=3, desc="x", unit="files", console=console)
+    with bar:
+        bar.update(3)
+
+
+def test_rich_unit_added_as_column():
+    from rich.console import Console
+    from rich.progress import TextColumn
+
+    console = Console(file=io.StringIO(), force_terminal=False)
+    bar = RichBackend(total=3, desc="x", unit="files", console=console)
+    unit_columns = [
+        c
+        for c in bar._progress.columns
+        if isinstance(c, TextColumn) and c.text_format == "files"
+    ]
+    assert len(unit_columns) == 1
+
+
+def test_tqdm_forwards_unit():
+    bar = TqdmBackend(total=3, desc="x", unit="files", file=io.StringIO())
+    try:
+        assert bar._inner.unit == "files"
+    finally:
+        bar._inner.close()
+
+
+def test_unit_via_facade_threads_through():
+    p = Progress(total=4, backend="non_tty", unit="files")
+    assert p._impl._unit == "files"  # type: ignore[attr-defined]
