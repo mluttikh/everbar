@@ -109,3 +109,13 @@ class Progress(Generic[T]):
         Calling again replaces the previous postfix.
         """
         self._impl.set_postfix(**kwargs)
+
+    def fail(self) -> None:
+        """Mark the bar as failing.
+
+        Rendering is backend-specific: red bar in tqdm/Rich, ``[failing]``
+        marker in non-TTY logs, ``[FAILING]`` title prefix plus a compact
+        red ``FAILED`` badge in Marimo. The state is sticky — useful when
+        one task in a batch errors but the overall job continues.
+        """
+        self._impl.fail()
