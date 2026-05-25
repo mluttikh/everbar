@@ -124,3 +124,31 @@ def test_fail_only_announces_once():
         bar.fail()
         bar.fail()
     assert bar._failure_announced is True
+
+
+def test_bar_unit_appears_in_subtitle():
+    bar = MarimoBackend(total=5, desc="x", unit="files")
+    assert bar._inner.progress.subtitle == "files"
+
+
+def test_bar_unit_combines_with_postfix():
+    with MarimoBackend(total=5, desc="x", unit="files") as bar:
+        bar.set_postfix(loss=0.1)
+    subtitle = bar._inner.progress.subtitle
+    assert "files" in subtitle
+    assert "loss=0.1" in subtitle
+    assert " | " in subtitle
+
+
+def test_spinner_unit_replaces_items_in_subtitle():
+    with MarimoBackend(desc="x", unit="files") as bar:
+        bar.update(3)
+    subtitle = bar._inner.spinner.subtitle
+    assert "3 files" in subtitle
+    assert "items" not in subtitle
+
+
+def test_spinner_unit_without_postfix():
+    with MarimoBackend(desc="x", unit="rows") as bar:
+        bar.update(7)
+    assert bar._inner.spinner.subtitle == "7 rows"
