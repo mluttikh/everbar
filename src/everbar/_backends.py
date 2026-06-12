@@ -8,6 +8,10 @@ Each backend implements the same minimal surface:
     set_postfix(**kwargs)  — live key/value suffix (e.g. loss=0.42)
     fail()                 — mark the bar as failing (sticky)
 
+Both forms may be mixed (``with Progress(items) as bar: for x in bar``),
+and manual ``update()`` works without entering the context manager —
+``__iter__`` only enters the context if the caller hasn't already.
+
 All backends additionally accept ``unit`` at construction time — a
 label like ``"files"`` or ``"B"``. Rendering varies per backend; see
 ``Progress.__init__`` for the high-level behavior.
@@ -21,7 +25,10 @@ import sys
 import time
 from collections.abc import Iterable, Iterator
 from contextlib import nullcontext
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self, cast
+
+if TYPE_CHECKING:
+    from collections.abc import Collection
 
 
 def _len_or_none(obj: Any) -> int | None:
@@ -101,10 +108,16 @@ class FallbackBackend:
         self._entered = False
 
     def __iter__(self) -> Iterator[Any]:
-        with self:
-            for item in self._iterable or ():
-                yield item
-                self.update(1)
+        if self._entered:
+            yield from self._iter_updating()
+        else:
+            with self:
+                yield from self._iter_updating()
+
+    def _iter_updating(self) -> Iterator[Any]:
+        for item in self._iterable or ():
+            yield item
+            self.update(1)
 
     def update(self, n: int = 1) -> None:
         self._n += n
@@ -117,6 +130,10 @@ class FallbackBackend:
         self._postfix = _format_postfix(kwargs)
 
     def fail(self) -> None:
+        # Log only the transition into the failing state; repeated fail()
+        # calls (e.g. once per item after an error) must not spam the log.
+        if self._failing:
+            return
         self._failing = True
         self._log(final=False)
 
@@ -235,23 +252,33 @@ class RichBackend:
             self._progress = _RichProgress(*columns, **kwargs)
         else:
             self._progress = _RichProgress(**kwargs)
-        self._task_id: Any = None
+        # Create the task eagerly so update()/set_postfix()/fail() work
+        # before __enter__, matching the tqdm and fallback backends.
+        self._task_id = self._progress.add_task(self._desc, total=self._total)
+        self._entered = False
         self._postfix = ""
         self._failing = False
 
     def __enter__(self) -> Self:
         self._progress.__enter__()
-        self._task_id = self._progress.add_task(self._desc, total=self._total)
+        self._entered = True
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> Any:
+        self._entered = False
         return self._progress.__exit__(exc_type, exc_val, exc_tb)
 
     def __iter__(self) -> Iterator[Any]:
-        with self:
-            for item in self._iterable or ():
-                yield item
-                self.update(1)
+        if self._entered:
+            yield from self._iter_updating()
+        else:
+            with self:
+                yield from self._iter_updating()
+
+    def _iter_updating(self) -> Iterator[Any]:
+        for item in self._iterable or ():
+            yield item
+            self.update(1)
 
     def update(self, n: int = 1) -> None:
         self._progress.update(self._task_id, advance=n)
@@ -299,33 +326,56 @@ class MarimoBackend:
         self._unit = unit
         self._postfix = ""
         self._n = 0
+        self._entered = False
         self._failing = False
         self._failure_announced = False
+        self._inner: Any
+        self._tracker: Any = None
 
         resolved_total = total if total is not None else _len_or_none(iterable)
         if resolved_total is None:
             self._mode = "spinner"
             # remove_on_exit=True so the animation stops; we render a
             # static "done" line in __exit__ since Marimo's spinner has
-            # no done state (upstream TODO).
-            self._inner: Any = mo.status.spinner(
+            # no done state (upstream TODO). The Spinner tracker only
+            # exists once entered, so updates before __enter__ are
+            # recorded in our own state and synced on entry.
+            self._inner = mo.status.spinner(
                 title=desc or None, remove_on_exit=True
             )
         else:
             self._mode = "bar"
-            self._inner = mo.status.progress_bar(
-                iterable,
-                total=resolved_total,
-                title=desc or None,
-                subtitle=unit or None,
-            )
-        self._tracker: Any = None
+            if iterable is None:
+                self._inner = mo.status.progress_bar(
+                    total=resolved_total,
+                    title=desc or None,
+                    subtitle=unit or None,
+                )
+            else:
+                # The cast satisfies marimo's overloads; bar mode implies
+                # the iterable is sized or an explicit total was given.
+                self._inner = mo.status.progress_bar(
+                    cast("Collection[Any]", iterable),
+                    total=resolved_total,
+                    title=desc or None,
+                    subtitle=unit or None,
+                )
+            # The ProgressBar tracker exists from construction; grab it
+            # eagerly so update()/set_postfix()/fail() work before
+            # __enter__, matching the tqdm and fallback backends.
+            self._tracker = self._inner.progress
 
     def __enter__(self) -> Self:
         self._tracker = self._inner.__enter__()
+        self._entered = True
+        if self._mode == "spinner" and (self._n or self._postfix):
+            self._tracker.update(subtitle=self._spinner_subtitle())
+        if self._failing:
+            self._apply_failing_title()
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> Any:
+        self._entered = False
         result = self._inner.__exit__(exc_type, exc_val, exc_tb)
         if self._mode == "spinner" and exc_type is None:
             parts = [self._desc] if self._desc else []
@@ -336,21 +386,24 @@ class MarimoBackend:
         return result
 
     def __iter__(self) -> Iterator[Any]:
-        if self._mode == "bar":
-            # progress_bar drives its own update() per item
-            return iter(self._inner)
-        # Spinner has no built-in iter; drive it ourselves so we can
-        # stream unknown-length iterables without materializing.
-        return self._spinner_iter()
+        # Drive iteration ourselves (rather than via marimo's own
+        # progress_bar iterator) so the tracker is live during the loop —
+        # set_postfix()/fail() on a kept handle must keep working.
+        if self._entered:
+            yield from self._iter_updating()
+        else:
+            with self:
+                yield from self._iter_updating()
 
-    def _spinner_iter(self) -> Iterator[Any]:
-        with self:
-            for item in self._iterable or ():
-                yield item
-                self.update(1)
+    def _iter_updating(self) -> Iterator[Any]:
+        for item in self._iterable or ():
+            yield item
+            self.update(1)
 
     def update(self, n: int = 1) -> None:
         self._n += n
+        if self._tracker is None:  # spinner mode, before __enter__
+            return
         if self._mode == "spinner":
             self._tracker.update(subtitle=self._spinner_subtitle())
         else:
@@ -358,6 +411,8 @@ class MarimoBackend:
 
     def set_postfix(self, **kwargs: Any) -> None:
         self._postfix = _format_postfix(kwargs)
+        if self._tracker is None:  # spinner mode, before __enter__
+            return
         if self._mode == "spinner":
             self._tracker.update(subtitle=self._spinner_subtitle())
         else:
@@ -374,28 +429,30 @@ class MarimoBackend:
     def fail(self) -> None:
         self._failing = True
         if self._tracker is not None:
-            # Marimo's progress UI can't recolor the bar, so we rewrite the
-            # title with an uppercase tag and append a compact inline badge
-            # once. PyMC's approach (custom HTML bar via mo.output.replace)
-            # is the only way to recolor the bar itself.
-            title = f"[FAILING] {self._desc}" if self._desc else "[FAILING]"
-            if self._mode == "spinner":
-                self._tracker.update(title=title)
-            else:
-                self._tracker.update(increment=0, title=title)
-            if not self._failure_announced:
-                label = f"FAILED — {self._desc}" if self._desc else "FAILED"
-                badge = (
-                    '<span style="display:inline-block;'
-                    "padding:2px 8px;margin-top:4px;"
-                    "background:#d62728;color:white;"
-                    "border-radius:4px;font-weight:600;"
-                    "font-size:0.85em;"
-                    'font-family:system-ui,sans-serif;">'
-                    f"{label}</span>"
-                )
-                self._mo.output.append(self._mo.Html(badge))
-                self._failure_announced = True
+            self._apply_failing_title()
+        if not self._failure_announced:
+            label = f"FAILED — {self._desc}" if self._desc else "FAILED"
+            badge = (
+                '<span style="display:inline-block;'
+                "padding:2px 8px;margin-top:4px;"
+                "background:#d62728;color:white;"
+                "border-radius:4px;font-weight:600;"
+                "font-size:0.85em;"
+                'font-family:system-ui,sans-serif;">'
+                f"{label}</span>"
+            )
+            self._mo.output.append(self._mo.Html(badge))
+            self._failure_announced = True
+
+    def _apply_failing_title(self) -> None:
+        # Marimo's progress UI can't recolor the bar, so we rewrite the
+        # title with an uppercase tag. PyMC's approach (custom HTML bar
+        # via mo.output.replace) is the only way to recolor the bar.
+        title = f"[FAILING] {self._desc}" if self._desc else "[FAILING]"
+        if self._mode == "spinner":
+            self._tracker.update(title=title)
+        else:
+            self._tracker.update(increment=0, title=title)
 
     def _spinner_subtitle(self) -> str:
         parts = [f"{self._n} {self._unit or 'items'}"]

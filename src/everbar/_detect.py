@@ -14,7 +14,6 @@ Environment = Literal[
     "kaggle",
     "vscode_notebook",
     "jupyter",
-    "jupyter_qt",
     "spyder",
     "databricks",
     "pyodide",
@@ -26,14 +25,19 @@ Environment = Literal[
 
 def detect_environment() -> Environment:
     """Return a string identifying the runtime environment."""
-    # 1. Marimo — official API
-    try:
-        import marimo  # type: ignore
+    # 1. Marimo — official API. Guarded by sys.modules: if marimo isn't
+    # already imported we can't be running inside a marimo notebook (its
+    # runtime imports it before user code runs), and the guard avoids
+    # paying marimo's import cost (~300ms) in plain scripts that merely
+    # have it installed.
+    if "marimo" in sys.modules:
+        try:
+            import marimo  # type: ignore
 
-        if marimo.running_in_notebook():
-            return "marimo"
-    except Exception:
-        pass
+            if marimo.running_in_notebook():
+                return "marimo"
+        except Exception:
+            pass
 
     # 2. Pyodide / JupyterLite
     if "pyodide" in sys.modules or sys.platform == "emscripten":
@@ -43,13 +47,16 @@ def detect_environment() -> Environment:
     if "DATABRICKS_RUNTIME_VERSION" in os.environ:
         return "databricks"
 
-    # 4. IPython-based environments
-    try:
-        from IPython import get_ipython  # type: ignore
+    # 4. IPython-based environments — same sys.modules guard as marimo:
+    # a live shell implies IPython is already imported.
+    ip = None
+    if "IPython" in sys.modules:
+        try:
+            from IPython import get_ipython  # type: ignore
 
-        ip = get_ipython()
-    except Exception:
-        ip = None
+            ip = get_ipython()
+        except Exception:
+            ip = None
 
     if ip is not None:
         shell = ip.__class__.__name__

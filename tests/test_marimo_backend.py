@@ -152,3 +152,41 @@ def test_spinner_unit_without_postfix():
     with MarimoBackend(desc="x", unit="rows") as bar:
         bar.update(7)
     assert bar._inner.spinner.subtitle == "7 rows"
+
+
+def test_bar_iterator_form_set_postfix_with_kept_handle():
+    """Regression: set_postfix during iterator-form iteration raised
+    AttributeError because the tracker was never set."""
+    bar = MarimoBackend([1, 2, 3], desc="x")
+    it = iter(bar)
+    next(it)
+    bar.set_postfix(loss=0.1)
+    assert "loss=0.1" in bar._inner.progress.subtitle
+    assert list(it) == [2, 3]
+    assert bar._n == 3
+
+
+def test_bar_iterator_form_fail_sets_title():
+    """Regression: fail() during iterator-form iteration was silently
+    dropped by the tracker-is-None guard."""
+    bar = MarimoBackend([1, 2, 3], desc="x")
+    it = iter(bar)
+    next(it)
+    bar.fail()
+    assert bar._inner.progress.title == "[FAILING] x"
+
+
+def test_bar_update_before_enter_records_progress():
+    bar = MarimoBackend(total=5, desc="x")
+    bar.update(2)
+    assert bar._inner.progress.current == 2
+
+
+def test_spinner_updates_before_enter_sync_on_entry():
+    bar = MarimoBackend(desc="x")
+    bar.update(2)  # no tracker yet — must not crash
+    bar.set_postfix(loss=0.5)
+    with bar:
+        subtitle = bar._inner.spinner.subtitle
+    assert "2 items" in subtitle
+    assert "loss=0.5" in subtitle

@@ -12,10 +12,10 @@ concurrency:
 
 jobs:
   lint:
-    name: Lint (ruff)
+    name: Lint & type-check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # setup-uv doesn't publish a floating major tag — must pin to a
       # specific version. Bump as new patches/minors land.
@@ -34,6 +34,11 @@ jobs:
       - name: ruff format --check
         run: uv run ruff format --check .
 
+      # Makes the assert_type contracts in tests/test_typing.py live —
+      # they are no-ops at runtime and only fail under a type checker.
+      - name: mypy
+        run: uv run mypy
+
   test:
     name: Test (Python ${{ matrix.python-version }} on ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -43,7 +48,7 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0

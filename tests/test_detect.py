@@ -8,7 +8,6 @@ VALID = {
     "kaggle",
     "vscode_notebook",
     "jupyter",
-    "jupyter_qt",
     "spyder",
     "databricks",
     "pyodide",

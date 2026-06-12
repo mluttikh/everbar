@@ -1,8 +1,9 @@
 """Public ``Progress`` facade. Picks a backend and delegates."""
 
 import os
+import warnings
 from collections.abc import Iterable, Iterator
-from typing import Any, Generic, Self, TypeVar
+from typing import Any, Generic, Self, TypeVar, overload
 
 from everbar._detect import detect_environment
 
@@ -11,17 +12,29 @@ T = TypeVar("T")
 _DEFAULT_BACKEND: str | None = None
 
 _NOTEBOOK_ENVS = {"jupyter", "colab", "kaggle", "vscode_notebook", "databricks"}
-_TQDM_STD_ENVS = {"terminal", "ipython_terminal", "spyder", "jupyter_qt"}
+_TQDM_STD_ENVS = {"terminal", "ipython_terminal", "spyder"}
+
+_VALID_BACKENDS = frozenset(
+    {"marimo", "rich", "pyodide", "non_tty"} | _NOTEBOOK_ENVS | _TQDM_STD_ENVS
+)
 
 
 def set_default_backend(name: str | None) -> None:
     """Pin the backend globally. Pass ``None`` to restore auto-detection.
 
     Valid names: ``"marimo"``, ``"jupyter"``, ``"colab"``, ``"kaggle"``,
-    ``"vscode_notebook"``, ``"jupyter_qt"``, ``"spyder"``, ``"databricks"``,
+    ``"vscode_notebook"``, ``"spyder"``, ``"databricks"``,
     ``"ipython_terminal"``, ``"terminal"``, ``"pyodide"``, ``"non_tty"``,
     ``"rich"``.
+
+    Raises:
+        ValueError: If ``name`` is not a known backend.
     """
+    if name is not None and name not in _VALID_BACKENDS:
+        raise ValueError(
+            f"unknown backend {name!r}; valid backends: "
+            f"{', '.join(sorted(_VALID_BACKENDS))}"
+        )
     global _DEFAULT_BACKEND  # noqa: PLW0603 — module-level pin is the API
     _DEFAULT_BACKEND = name
 
@@ -46,7 +59,41 @@ class Progress(Generic[T]):
     (``5files/s``), Rich adds a count + unit column, Marimo shows it in
     the bar subtitle, and the non-TTY fallback inlines it in the log
     line (``5/10 files (50%)``).
+
+    Extra keyword arguments are forwarded to whichever backend is
+    selected, so they are environment-specific by nature (tqdm's
+    ``colour``, Rich's ``console``, the fallback's ``min_interval``).
+    Code that must run everywhere should stick to the named parameters.
     """
+
+    # Overloads so type checkers solve T: from the iterable when given,
+    # to Any when constructed bare (e.g. Progress(total=10)) — without
+    # them, mypy demands an explicit ``Progress[...]`` annotation.
+    @overload
+    def __init__(
+        self,
+        iterable: Iterable[T],
+        total: int | None = None,
+        desc: str = "",
+        backend: str | None = None,
+        *,
+        disable: bool = False,
+        unit: str | None = None,
+        **kwargs: Any,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self: "Progress[Any]",
+        iterable: None = None,
+        total: int | None = None,
+        desc: str = "",
+        backend: str | None = None,
+        *,
+        disable: bool = False,
+        unit: str | None = None,
+        **kwargs: Any,
+    ) -> None: ...
 
     def __init__(
         self,
@@ -59,15 +106,31 @@ class Progress(Generic[T]):
         unit: str | None = None,
         **kwargs: Any,
     ) -> None:
+        if backend is not None and backend not in _VALID_BACKENDS:
+            raise ValueError(
+                f"unknown backend {backend!r}; valid backends: "
+                f"{', '.join(sorted(_VALID_BACKENDS))}"
+            )
+
+        env_backend = os.environ.get("EVERBAR_BACKEND")
+        if env_backend and env_backend not in _VALID_BACKENDS:
+            # Warn-and-ignore rather than raise: a stale deploy-time env
+            # var shouldn't crash scripts that never asked for it.
+            warnings.warn(
+                f"ignoring EVERBAR_BACKEND={env_backend!r}: not a known "
+                f"backend (valid: {', '.join(sorted(_VALID_BACKENDS))})",
+                stacklevel=2,
+            )
+            env_backend = None
+
         self._iterable = iterable
         self._total = total
         self._desc = desc
         self._unit = unit
         self._kwargs = kwargs
 
-        chosen = (
-            backend or os.environ.get("EVERBAR_BACKEND") or _DEFAULT_BACKEND
-        )
+        chosen = backend or env_backend or _DEFAULT_BACKEND
+        self._explicit = chosen is not None
         self._env: str = chosen or detect_environment()
         self._impl = self._make_impl(disable=disable)
 
@@ -97,12 +160,23 @@ class Progress(Generic[T]):
                 return _backends.TqdmBackend(
                     self._iterable, notebook=False, **common
                 )
-        except ImportError:
-            pass
+        except ImportError as e:
+            # Auto-detected environments degrade silently to the text
+            # fallback; an explicitly requested backend must not.
+            if self._explicit:
+                raise ImportError(
+                    f"backend {self._env!r} was requested explicitly but "
+                    f"its dependencies are not installed: {e}"
+                ) from e
 
         return _backends.FallbackBackend(self._iterable, **common)
 
     def __iter__(self) -> Iterator[T]:
+        if self._iterable is None:
+            raise TypeError(
+                "this Progress was constructed without an iterable; "
+                "drive it manually with update() instead"
+            )
         return iter(self._impl)
 
     def __enter__(self) -> Self:

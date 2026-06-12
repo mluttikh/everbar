@@ -37,6 +37,7 @@ all = ["tqdm>=4.65", "rich>=13.0", "ipywidgets>=8.0", "marimo>=0.10"]
 dev = [
     "pytest>=7.0",
     "ruff>=0.6",
+    "mypy>=1.10",
     "tqdm>=4.65",
     "rich>=13.0",
     "ipywidgets>=8.0",
@@ -52,6 +53,17 @@ packages = ["src/everbar"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.mypy]
+files = ["src", "tests"]
+# Check bodies of unannotated functions too — the tests are deliberately
+# light on annotations but still exercise the typed public API.
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+# tqdm ships no py.typed marker, so mypy can't see its types.
+module = "tqdm.*"
+ignore_missing_imports = true
 
 [tool.ruff]
 line-length = 80

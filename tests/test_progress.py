@@ -6,6 +6,8 @@ spam the terminal during CI.
 
 import io
 
+import pytest
+
 from everbar import Progress, set_default_backend
 from everbar._backends import (
     FallbackBackend,
@@ -222,3 +224,110 @@ def test_tqdm_forwards_unit():
 def test_unit_via_facade_threads_through():
     p = Progress(total=4, backend="non_tty", unit="files")
     assert p._impl._unit == "files"  # type: ignore[attr-defined]
+
+
+def test_version_matches_installed_metadata():
+    """Regression: __version__ was hardcoded and drifted from pyproject."""
+    import importlib.metadata
+
+    import everbar
+
+    assert everbar.__version__ == importlib.metadata.version("everbar")
+
+
+def test_py_typed_marker_is_packaged():
+    """PEP 561: without py.typed, downstream type checkers ignore our hints."""
+    from importlib.resources import files
+
+    assert files("everbar").joinpath("py.typed").is_file()
+
+
+def test_unknown_backend_name_raises():
+    with pytest.raises(ValueError, match="termnal"):
+        Progress([1, 2, 3], backend="termnal")
+
+
+def test_set_default_backend_rejects_unknown_name():
+    with pytest.raises(ValueError, match="bogus"):
+        set_default_backend("bogus")
+
+
+def test_unknown_env_var_warns_and_falls_back_to_detection(monkeypatch):
+    monkeypatch.setenv("EVERBAR_BACKEND", "bogus")
+    with pytest.warns(UserWarning, match="EVERBAR_BACKEND"):
+        p = Progress([1, 2, 3])
+    assert p._impl is not None
+
+
+def test_explicit_backend_with_missing_dep_raises(monkeypatch):
+    """Regression: backend="rich" without rich silently degraded to log lines."""
+    from everbar import _backends
+
+    class _Unavailable:
+        def __init__(self, *args, **kwargs):
+            raise ImportError("No module named 'rich'")
+
+    monkeypatch.setattr(_backends, "RichBackend", _Unavailable)
+    with pytest.raises(ImportError, match="requested explicitly"):
+        Progress([1, 2, 3], backend="rich")
+
+
+def test_autodetected_backend_with_missing_dep_falls_back(monkeypatch):
+    from everbar import _backends, _progress
+
+    class _Unavailable:
+        def __init__(self, *args, **kwargs):
+            raise ImportError("No module named 'tqdm'")
+
+    monkeypatch.delenv("EVERBAR_BACKEND", raising=False)
+    monkeypatch.setattr(_backends, "TqdmBackend", _Unavailable)
+    monkeypatch.setattr(_progress, "detect_environment", lambda: "terminal")
+    p = Progress([1, 2, 3])
+    assert isinstance(p._impl, FallbackBackend)
+
+
+def test_with_and_iter_mixed_does_not_double_enter():
+    """Regression: ``with Progress(items) as bar: for x in bar`` entered the
+    backend twice, duplicating the entry and done log lines."""
+    buf = io.StringIO()
+    with Progress(
+        [1, 2, 3], backend="non_tty", min_interval=0.0, stream=buf
+    ) as bar:
+        assert list(bar) == [1, 2, 3]
+    output = buf.getvalue()
+    assert output.count("0/3") == 1
+    assert output.count("[done]") == 1
+
+
+def test_rich_calls_before_enter_do_not_crash():
+    """Regression: update()/set_postfix()/fail() before __enter__ raised
+    KeyError because the task was only created on entry."""
+    from rich.console import Console
+
+    console = Console(file=io.StringIO(), force_terminal=False)
+    bar = RichBackend(total=3, desc="x", console=console)
+    bar.update(1)
+    bar.set_postfix(loss=0.1)
+    bar.fail()
+    with bar:
+        bar.update(2)
+    assert bar._progress.tasks[bar._task_id].completed == 3
+
+
+def test_iter_without_iterable_raises_type_error():
+    p = Progress(total=10, backend="non_tty")
+    with pytest.raises(TypeError, match="without an iterable"):
+        iter(p)
+
+
+def test_fallback_fail_logs_only_the_transition():
+    """Regression: every fail() call logged a line, bypassing min_interval."""
+    buf = io.StringIO()
+    bar = FallbackBackend(total=3, min_interval=60.0, stream=buf)
+    with bar:
+        bar.fail()
+        bar.fail()
+        bar.fail()
+    # One [failing] line from the first fail(), one from the final exit
+    # log (the sticky state keeps the marker); the repeats add nothing.
+    assert buf.getvalue().count("[failing]") == 2
