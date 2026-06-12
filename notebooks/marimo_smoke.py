@@ -182,5 +182,20 @@ def _(Progress, time):
     return
 
 
+@app.cell
+def _(mo):
+    mo.md("""
+    ## 10. unit label (appears in subtitle for Marimo bar / spinner)
+    """)
+    return
+
+
+@app.cell
+def _(Progress, time):
+    for _i in Progress(range(10), desc="Downloading", unit="files"):
+        time.sleep(0.05)
+    return
+
+
 if __name__ == "__main__":
     app.run()

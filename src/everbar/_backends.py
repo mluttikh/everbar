@@ -8,6 +8,10 @@ Each backend implements the same minimal surface:
     set_postfix(**kwargs)  — live key/value suffix (e.g. loss=0.42)
     fail()                 — mark the bar as failing (sticky)
 
+All backends additionally accept ``unit`` at construction time — a
+label like ``"files"`` or ``"B"``. Rendering varies per backend; see
+``Progress.__init__`` for the high-level behavior.
+
 Backends are constructed lazily by ``Progress``. Optional third-party
 dependencies (``tqdm``, ``marimo``) are imported only inside the backend
 that needs them, so ``everbar`` itself has zero required deps.
@@ -69,11 +73,13 @@ class FallbackBackend:
         desc: str = "",
         min_interval: float = 2.0,
         stream: Any = None,
+        unit: str | None = None,
         **_: Any,
     ) -> None:
         self._iterable = iterable
         self._total = total if total is not None else _len_or_none(iterable)
         self._desc = desc
+        self._unit = unit
         self._min_interval = min_interval
         self._stream = stream if stream is not None else sys.stderr
         self._n = 0
@@ -129,9 +135,10 @@ class FallbackBackend:
         else:
             marker = "progress"
         desc = f" {self._desc}" if self._desc else ""
+        unit = f" {self._unit}" if self._unit else ""
         postfix = f" [{self._postfix}]" if self._postfix else ""
         line = (
-            f"[{marker}]{desc} {self._n}/{total_str}"
+            f"[{marker}]{desc} {self._n}/{total_str}{unit}"
             f" ({pct}) elapsed={elapsed:.1f}s{postfix}"
         )
         print(line, file=self._stream, flush=True)
@@ -151,12 +158,15 @@ class TqdmBackend:
         desc: str = "",
         *,
         notebook: bool = False,
+        unit: str | None = None,
         **kwargs: Any,
     ) -> None:
         if notebook:
             from tqdm.notebook import tqdm as _tqdm
         else:
             from tqdm import tqdm as _tqdm
+        if unit is not None:
+            kwargs["unit"] = unit
         self._inner = _tqdm(iterable, total=total, desc=desc, **kwargs)
 
     def __enter__(self) -> Self:
@@ -193,14 +203,38 @@ class RichBackend:
         iterable: Iterable[Any] | None = None,
         total: int | None = None,
         desc: str = "",
+        unit: str | None = None,
         **kwargs: Any,
     ) -> None:
-        from rich.progress import Progress as _RichProgress
+        from rich.progress import (
+            BarColumn,
+            MofNCompleteColumn,
+            TaskProgressColumn,
+            TextColumn,
+            TimeRemainingColumn,
+        )
+        from rich.progress import (
+            Progress as _RichProgress,
+        )
 
         self._iterable = iterable
         self._total = total if total is not None else _len_or_none(iterable)
         self._desc = desc
-        self._progress = _RichProgress(**kwargs)
+        self._unit = unit
+        if unit is not None:
+            # Mirror rich's default column set, inserting a count + unit
+            # block between the bar and the percentage.
+            columns = (
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                MofNCompleteColumn(),
+                TextColumn(unit),
+                TaskProgressColumn(),
+                TimeRemainingColumn(),
+            )
+            self._progress = _RichProgress(*columns, **kwargs)
+        else:
+            self._progress = _RichProgress(**kwargs)
         self._task_id: Any = None
         self._postfix = ""
         self._failing = False
@@ -254,6 +288,7 @@ class MarimoBackend:
         iterable: Iterable[Any] | None = None,
         total: int | None = None,
         desc: str = "",
+        unit: str | None = None,
         **_: Any,
     ) -> None:
         import marimo as mo
@@ -261,6 +296,7 @@ class MarimoBackend:
         self._mo = mo
         self._iterable = iterable
         self._desc = desc
+        self._unit = unit
         self._postfix = ""
         self._n = 0
         self._failing = False
@@ -278,7 +314,10 @@ class MarimoBackend:
         else:
             self._mode = "bar"
             self._inner = mo.status.progress_bar(
-                iterable, total=resolved_total, title=desc or None
+                iterable,
+                total=resolved_total,
+                title=desc or None,
+                subtitle=unit or None,
             )
         self._tracker: Any = None
 
@@ -290,7 +329,7 @@ class MarimoBackend:
         result = self._inner.__exit__(exc_type, exc_val, exc_tb)
         if self._mode == "spinner" and exc_type is None:
             parts = [self._desc] if self._desc else []
-            parts.append(f"{self._n} items")
+            parts.append(f"{self._n} {self._unit or 'items'}")
             if self._postfix:
                 parts.append(self._postfix)
             self._mo.output.append(self._mo.md(f"Done — {' — '.join(parts)}"))
@@ -322,7 +361,15 @@ class MarimoBackend:
         if self._mode == "spinner":
             self._tracker.update(subtitle=self._spinner_subtitle())
         else:
-            self._tracker.update(increment=0, subtitle=self._postfix or None)
+            self._tracker.update(increment=0, subtitle=self._bar_subtitle())
+
+    def _bar_subtitle(self) -> str | None:
+        parts = []
+        if self._unit:
+            parts.append(self._unit)
+        if self._postfix:
+            parts.append(self._postfix)
+        return " | ".join(parts) if parts else None
 
     def fail(self) -> None:
         self._failing = True
@@ -351,7 +398,7 @@ class MarimoBackend:
                 self._failure_announced = True
 
     def _spinner_subtitle(self) -> str:
-        parts = [f"{self._n} items"]
+        parts = [f"{self._n} {self._unit or 'items'}"]
         if self._postfix:
             parts.append(self._postfix)
         return " | ".join(parts)
