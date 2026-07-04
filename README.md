@@ -85,10 +85,11 @@ Precedence: the `backend=` argument wins, then `EVERBAR_BACKEND`, then
 `set_default_backend`, then auto-detection.
 
 Unknown backend names raise `ValueError` (`EVERBAR_BACKEND` warns and is
-ignored instead, so a stale deploy-time value can't crash a script). If
-you request a backend explicitly and its dependency isn't installed, you
-get an `ImportError` — auto-detection falls back to the text backend
-silently.
+ignored instead). If you request a backend in code (`backend=` or
+`set_default_backend`) and its dependency isn't installed, you get an
+`ImportError`; if `EVERBAR_BACKEND` names it, everbar warns and uses the
+text fallback instead — deploy-time configuration never crashes a
+script. Auto-detection falls back silently.
 
 Extra keyword arguments to `Progress` are forwarded to the selected
 backend, so they are environment-specific by nature (tqdm's `colour`,

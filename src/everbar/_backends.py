@@ -9,8 +9,10 @@ Each backend implements the same minimal surface:
     fail()                 — mark the bar as failing (sticky)
 
 Both forms may be mixed (``with Progress(items) as bar: for x in bar``),
-and manual ``update()`` works without entering the context manager —
-``__iter__`` only enters the context if the caller hasn't already.
+and ``update()``/``set_postfix()``/``fail()`` are safe before the
+context is entered — state is recorded, though the Rich backend only
+starts rendering once entered. ``__iter__`` enters the context for the
+duration of the loop if the caller hasn't already.
 
 All backends additionally accept ``unit`` at construction time — a
 label like ``"files"`` or ``"B"``. Rendering varies per backend; see
@@ -46,6 +48,43 @@ def _format_postfix(items: dict[str, Any]) -> str:
     return ", ".join(parts)
 
 
+class _IterUpdatingMixin:
+    """Shared iterator form: yield each item, advancing the bar by one.
+
+    Host classes provide ``_iterable``, ``_entered``, ``update()``, and
+    the context-manager protocol. ``__iter__`` enters the backend for
+    the duration of the loop unless the caller already has (mixed
+    context-manager + iterator form). The ``is None`` check (rather
+    than truthiness) matters: iterables like numpy arrays raise on
+    ``__bool__``.
+    """
+
+    _iterable: Iterable[Any] | None
+    _entered: bool
+
+    if TYPE_CHECKING:
+
+        def __enter__(self) -> Self: ...
+
+        def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> Any: ...
+
+        def update(self, n: int = 1) -> None: ...
+
+    def __iter__(self) -> Iterator[Any]:
+        if self._entered:
+            yield from self._iter_updating()
+        else:
+            with self:
+                yield from self._iter_updating()
+
+    def _iter_updating(self) -> Iterator[Any]:
+        if self._iterable is None:
+            return
+        for item in self._iterable:
+            yield item
+            self.update(1)
+
+
 class NullBackend(nullcontext):
     """No-op backend used when ``disable=True``."""
 
@@ -54,7 +93,7 @@ class NullBackend(nullcontext):
         self._iterable = iterable
 
     def __iter__(self) -> Iterator[Any]:
-        return iter(self._iterable or ())
+        return iter(()) if self._iterable is None else iter(self._iterable)
 
     def update(self, n: int = 1) -> None:  # noqa: ARG002 — protocol shape
         return None
@@ -66,7 +105,7 @@ class NullBackend(nullcontext):
         return None
 
 
-class FallbackBackend:
+class FallbackBackend(_IterUpdatingMixin):
     r"""Log-line backend for non-TTY environments.
 
     Emits one line every ``min_interval`` seconds. Suitable for CI logs,
@@ -106,18 +145,6 @@ class FallbackBackend:
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         self._log(final=True)
         self._entered = False
-
-    def __iter__(self) -> Iterator[Any]:
-        if self._entered:
-            yield from self._iter_updating()
-        else:
-            with self:
-                yield from self._iter_updating()
-
-    def _iter_updating(self) -> Iterator[Any]:
-        for item in self._iterable or ():
-            yield item
-            self.update(1)
 
     def update(self, n: int = 1) -> None:
         self._n += n
@@ -161,11 +188,14 @@ class FallbackBackend:
         print(line, file=self._stream, flush=True)
 
 
-class TqdmBackend:
+class TqdmBackend(_IterUpdatingMixin):
     """Wraps ``tqdm``.
 
     Aggregates rather than subclasses so Marimo's function-style monkey-patch
-    of ``tqdm_notebook`` (#4016) can't break us.
+    of ``tqdm_notebook`` (#4016) can't break us. Iteration is driven by
+    everbar (the iterable is never handed to tqdm): tqdm's own iterator
+    closes the bar on exhaustion, which would silently drop update()/
+    set_postfix()/fail() calls made after a mixed-form loop finishes.
     """
 
     def __init__(
@@ -184,17 +214,22 @@ class TqdmBackend:
             from tqdm import tqdm as _tqdm
         if unit is not None:
             kwargs["unit"] = unit
-        self._inner = _tqdm(iterable, total=total, desc=desc, **kwargs)
+        self._iterable = iterable
+        self._entered = False
+        self._inner = _tqdm(
+            total=total if total is not None else _len_or_none(iterable),
+            desc=desc,
+            **kwargs,
+        )
 
     def __enter__(self) -> Self:
         self._inner.__enter__()
+        self._entered = True
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> Any:
+        self._entered = False
         return self._inner.__exit__(exc_type, exc_val, exc_tb)
-
-    def __iter__(self) -> Iterator[Any]:
-        return iter(self._inner)
 
     def update(self, n: int = 1) -> None:
         self._inner.update(n)
@@ -207,7 +242,7 @@ class TqdmBackend:
         self._inner.refresh()
 
 
-class RichBackend:
+class RichBackend(_IterUpdatingMixin):
     """Wraps ``rich.progress.Progress``.
 
     Opt-in only — selected via ``backend="rich"`` or ``EVERBAR_BACKEND=rich``.
@@ -252,33 +287,26 @@ class RichBackend:
             self._progress = _RichProgress(*columns, **kwargs)
         else:
             self._progress = _RichProgress(**kwargs)
-        # Create the task eagerly so update()/set_postfix()/fail() work
-        # before __enter__, matching the tqdm and fallback backends.
-        self._task_id = self._progress.add_task(self._desc, total=self._total)
+        # Create the task eagerly (but unstarted) so update()/set_postfix()/
+        # fail() before __enter__ record state without crashing. Rendering
+        # and the task clock (elapsed / finished-time) start at __enter__.
+        self._task_id = self._progress.add_task(
+            self._desc, total=self._total, start=False
+        )
         self._entered = False
         self._postfix = ""
         self._failing = False
 
     def __enter__(self) -> Self:
         self._progress.__enter__()
+        # Idempotent — start_task only sets start_time if it is unset.
+        self._progress.start_task(self._task_id)
         self._entered = True
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> Any:
         self._entered = False
         return self._progress.__exit__(exc_type, exc_val, exc_tb)
-
-    def __iter__(self) -> Iterator[Any]:
-        if self._entered:
-            yield from self._iter_updating()
-        else:
-            with self:
-                yield from self._iter_updating()
-
-    def _iter_updating(self) -> Iterator[Any]:
-        for item in self._iterable or ():
-            yield item
-            self.update(1)
 
     def update(self, n: int = 1) -> None:
         self._progress.update(self._task_id, advance=n)
@@ -302,12 +330,16 @@ class RichBackend:
         return f"{prefix}{self._desc}{suffix}"
 
 
-class MarimoBackend:
+class MarimoBackend(_IterUpdatingMixin):
     """Marimo-native bar via ``marimo.status.progress_bar``.
 
     Falls back to ``marimo.status.spinner`` when the total is unknown,
     since Marimo's progress bar requires a known total and has no
     indeterminate mode. The spinner shows a running count in its subtitle.
+
+    Iteration is driven by everbar (never via marimo's own progress_bar
+    iterator) so the tracker is live during the loop — set_postfix()/
+    fail() on a kept handle must keep working.
     """
 
     def __init__(
@@ -327,6 +359,7 @@ class MarimoBackend:
         self._postfix = ""
         self._n = 0
         self._entered = False
+        self._closed = False
         self._failing = False
         self._failure_announced = False
         self._inner: Any
@@ -377,6 +410,9 @@ class MarimoBackend:
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> Any:
         self._entered = False
         result = self._inner.__exit__(exc_type, exc_val, exc_tb)
+        # Marimo raises if a closed indicator is updated; from here on,
+        # update()/set_postfix()/fail() record state only.
+        self._closed = True
         if self._mode == "spinner" and exc_type is None:
             parts = [self._desc] if self._desc else []
             parts.append(f"{self._n} {self._unit or 'items'}")
@@ -385,24 +421,11 @@ class MarimoBackend:
             self._mo.output.append(self._mo.md(f"Done — {' — '.join(parts)}"))
         return result
 
-    def __iter__(self) -> Iterator[Any]:
-        # Drive iteration ourselves (rather than via marimo's own
-        # progress_bar iterator) so the tracker is live during the loop —
-        # set_postfix()/fail() on a kept handle must keep working.
-        if self._entered:
-            yield from self._iter_updating()
-        else:
-            with self:
-                yield from self._iter_updating()
-
-    def _iter_updating(self) -> Iterator[Any]:
-        for item in self._iterable or ():
-            yield item
-            self.update(1)
-
     def update(self, n: int = 1) -> None:
         self._n += n
-        if self._tracker is None:  # spinner mode, before __enter__
+        if self._tracker is None or self._closed:
+            # Spinner mode before __enter__, or any mode after exit —
+            # record the count; there is no live tracker to render it.
             return
         if self._mode == "spinner":
             self._tracker.update(subtitle=self._spinner_subtitle())
@@ -411,7 +434,8 @@ class MarimoBackend:
 
     def set_postfix(self, **kwargs: Any) -> None:
         self._postfix = _format_postfix(kwargs)
-        if self._tracker is None:  # spinner mode, before __enter__
+        if self._tracker is None or self._closed:
+            # Spinner mode before __enter__, or any mode after exit.
             return
         if self._mode == "spinner":
             self._tracker.update(subtitle=self._spinner_subtitle())
@@ -428,7 +452,7 @@ class MarimoBackend:
 
     def fail(self) -> None:
         self._failing = True
-        if self._tracker is not None:
+        if self._tracker is not None and not self._closed:
             self._apply_failing_title()
         if not self._failure_announced:
             label = f"FAILED — {self._desc}" if self._desc else "FAILED"

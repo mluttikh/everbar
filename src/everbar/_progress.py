@@ -130,7 +130,11 @@ class Progress(Generic[T]):
         self._kwargs = kwargs
 
         chosen = backend or env_backend or _DEFAULT_BACKEND
-        self._explicit = chosen is not None
+        # backend= and set_default_backend() are code-level intent whose
+        # missing dependencies should raise; EVERBAR_BACKEND is deploy-time
+        # config, which degrades to the fallback with a warning instead.
+        self._from_env = backend is None and bool(env_backend)
+        self._explicit = chosen is not None and not self._from_env
         self._env: str = chosen or detect_environment()
         self._impl = self._make_impl(disable=disable)
 
@@ -162,12 +166,19 @@ class Progress(Generic[T]):
                 )
         except ImportError as e:
             # Auto-detected environments degrade silently to the text
-            # fallback; an explicitly requested backend must not.
+            # fallback; a backend requested in code must not.
             if self._explicit:
                 raise ImportError(
                     f"backend {self._env!r} was requested explicitly but "
                     f"its dependencies are not installed: {e}"
                 ) from e
+            if self._from_env:
+                warnings.warn(
+                    f"EVERBAR_BACKEND={self._env!r} is set but its "
+                    f"dependencies are not installed; using the text "
+                    f"fallback: {e}",
+                    stacklevel=3,
+                )
 
         return _backends.FallbackBackend(self._iterable, **common)
 

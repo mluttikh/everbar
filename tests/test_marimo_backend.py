@@ -190,3 +190,25 @@ def test_spinner_updates_before_enter_sync_on_entry():
         subtitle = bar._inner.spinner.subtitle
     assert "2 items" in subtitle
     assert "loss=0.5" in subtitle
+
+
+def test_calls_after_iteration_completes_are_noops():
+    """Regression: the eagerly-grabbed bar-mode tracker stayed live after
+    marimo closed the bar on exit, so fail()/set_postfix()/update() in
+    summary code after the loop raised marimo's RuntimeError."""
+    bar = MarimoBackend([1, 2, 3], desc="x")
+    assert list(bar) == [1, 2, 3]
+    bar.fail()  # must not raise; badge is still announced
+    bar.set_postfix(loss=0.5)
+    bar.update(1)
+    assert bar._failing
+    assert bar._n == 4
+
+
+def test_calls_after_context_exit_are_noops():
+    with MarimoBackend(total=3, desc="x") as bar:
+        bar.update(1)
+    bar.update(1)
+    bar.set_postfix(loss=0.5)
+    bar.fail()
+    assert bar._n == 2

@@ -331,3 +331,77 @@ def test_fallback_fail_logs_only_the_transition():
     # One [failing] line from the first fail(), one from the final exit
     # log (the sticky state keeps the marker); the repeats add nothing.
     assert buf.getvalue().count("[failing]") == 2
+
+
+def test_env_var_backend_with_missing_dep_warns_and_falls_back(monkeypatch):
+    """Regression: EVERBAR_BACKEND=rich without rich installed raised
+    ImportError from every Progress construction; deploy-time config
+    must degrade to the fallback (with a warning), not crash."""
+    from everbar import _backends
+
+    class _Unavailable:
+        def __init__(self, *args, **kwargs):
+            raise ImportError("No module named 'rich'")
+
+    monkeypatch.setenv("EVERBAR_BACKEND", "rich")
+    monkeypatch.setattr(_backends, "RichBackend", _Unavailable)
+    with pytest.warns(UserWarning, match="EVERBAR_BACKEND"):
+        p = Progress([1, 2, 3])
+    assert isinstance(p._impl, FallbackBackend)
+
+
+def test_default_backend_pin_with_missing_dep_raises(monkeypatch):
+    """set_default_backend is code-level intent, like backend= — a
+    missing dependency must raise rather than degrade silently."""
+    from everbar import _backends
+
+    class _Unavailable:
+        def __init__(self, *args, **kwargs):
+            raise ImportError("No module named 'rich'")
+
+    monkeypatch.delenv("EVERBAR_BACKEND", raising=False)
+    monkeypatch.setattr(_backends, "RichBackend", _Unavailable)
+    set_default_backend("rich")
+    try:
+        with pytest.raises(ImportError, match="requested explicitly"):
+            Progress([1, 2, 3])
+    finally:
+        set_default_backend(None)
+
+
+def test_tqdm_fail_after_mixed_form_loop_is_not_dropped():
+    """Regression: tqdm's own iterator closes the bar on exhaustion
+    (disable=True), so fail()/set_postfix() after a mixed-form loop were
+    silently dropped. everbar now drives iteration itself."""
+    buf = io.StringIO()
+    with TqdmBackend([1, 2, 3], file=buf) as bar:
+        assert list(bar) == [1, 2, 3]
+        bar.fail()
+        assert bar._inner.disable is False
+        assert bar._inner.colour == "red"
+    assert bar._inner.n == 3
+
+
+def test_tqdm_manual_updates_survive_iteration():
+    """Regression: tqdm's iterator finally-block overwrote n on
+    exhaustion, discarding manual update() calls made during the loop."""
+    bar = TqdmBackend([1, 2, 3], total=13, file=io.StringIO())
+    it = iter(bar)
+    next(it)
+    bar.update(10)
+    assert list(it) == [2, 3]
+    assert bar._inner.n == 13
+
+
+def test_rich_task_clock_starts_at_enter():
+    """Regression: eager add_task started the task clock at construction,
+    so elapsed/finished-time included the construct-to-enter gap."""
+    from rich.console import Console
+
+    console = Console(file=io.StringIO(), force_terminal=False)
+    bar = RichBackend(total=3, desc="x", console=console)
+    bar.update(1)  # pre-enter updates must not start the clock
+    assert bar._progress.tasks[bar._task_id].start_time is None
+    with bar:
+        assert bar._progress.tasks[bar._task_id].start_time is not None
+        assert bar._progress.tasks[bar._task_id].completed == 1
