@@ -27,10 +27,7 @@ import sys
 import time
 from collections.abc import Iterable, Iterator
 from contextlib import nullcontext
-from typing import TYPE_CHECKING, Any, Self, cast
-
-if TYPE_CHECKING:
-    from collections.abc import Collection
+from typing import TYPE_CHECKING, Any, Self
 
 
 def _len_or_none(obj: Any) -> int | None:
@@ -57,6 +54,9 @@ class _IterUpdatingMixin:
     context-manager + iterator form). The ``is None`` check (rather
     than truthiness) matters: iterables like numpy arrays raise on
     ``__bool__``.
+
+    Entering the context *while* an iterator that owns it is mid-loop
+    (``it = iter(bar); next(it); with bar: ...``) is unsupported.
     """
 
     _iterable: Iterable[Any] | None
@@ -71,11 +71,17 @@ class _IterUpdatingMixin:
         def update(self, n: int = 1) -> None: ...
 
     def __iter__(self) -> Iterator[Any]:
-        if self._entered:
-            yield from self._iter_updating()
-        else:
+        # Decide ownership NOW, not lazily inside the generator: an
+        # iterator created while the context is entered must not
+        # re-enter the backend even if consumed after the context exits.
+        return self._iterate(owns_context=not self._entered)
+
+    def _iterate(self, *, owns_context: bool) -> Iterator[Any]:
+        if owns_context:
             with self:
                 yield from self._iter_updating()
+        else:
+            yield from self._iter_updating()
 
     def _iter_updating(self) -> Iterator[Any]:
         if self._iterable is None:
@@ -143,7 +149,9 @@ class FallbackBackend(_IterUpdatingMixin):
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        self._log(final=True)
+        # Claim "done" only on a clean exit: an exception or an abandoned
+        # iterator (GeneratorExit via break) must not log success.
+        self._log(final=exc_type is None)
         self._entered = False
 
     def update(self, n: int = 1) -> None:
@@ -378,21 +386,14 @@ class MarimoBackend(_IterUpdatingMixin):
             )
         else:
             self._mode = "bar"
-            if iterable is None:
-                self._inner = mo.status.progress_bar(
-                    total=resolved_total,
-                    title=desc or None,
-                    subtitle=unit or None,
-                )
-            else:
-                # The cast satisfies marimo's overloads; bar mode implies
-                # the iterable is sized or an explicit total was given.
-                self._inner = mo.status.progress_bar(
-                    cast("Collection[Any]", iterable),
-                    total=resolved_total,
-                    title=desc or None,
-                    subtitle=unit or None,
-                )
+            # The iterable is deliberately not handed to marimo: everbar
+            # drives iteration itself and total is always passed, so the
+            # collection would be dead weight.
+            self._inner = mo.status.progress_bar(
+                total=resolved_total,
+                title=desc or None,
+                subtitle=unit or None,
+            )
             # The ProgressBar tracker exists from construction; grab it
             # eagerly so update()/set_postfix()/fail() work before
             # __enter__, matching the tqdm and fallback backends.
@@ -413,7 +414,9 @@ class MarimoBackend(_IterUpdatingMixin):
         # Marimo raises if a closed indicator is updated; from here on,
         # update()/set_postfix()/fail() record state only.
         self._closed = True
-        if self._mode == "spinner" and exc_type is None:
+        # No "Done" line after fail(): the FAILED badge already tells the
+        # story, and announcing both would contradict the sticky state.
+        if self._mode == "spinner" and exc_type is None and not self._failing:
             parts = [self._desc] if self._desc else []
             parts.append(f"{self._n} {self._unit or 'items'}")
             if self._postfix:
@@ -442,13 +445,15 @@ class MarimoBackend(_IterUpdatingMixin):
         else:
             self._tracker.update(increment=0, subtitle=self._bar_subtitle())
 
-    def _bar_subtitle(self) -> str | None:
+    def _bar_subtitle(self) -> str:
         parts = []
         if self._unit:
             parts.append(self._unit)
         if self._postfix:
             parts.append(self._postfix)
-        return " | ".join(parts) if parts else None
+        # "" rather than None when empty: marimo treats subtitle=None as
+        # "leave unchanged", which would make a cleared postfix stick.
+        return " | ".join(parts)
 
     def fail(self) -> None:
         self._failing = True

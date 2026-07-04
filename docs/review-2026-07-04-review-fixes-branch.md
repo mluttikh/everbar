@@ -14,6 +14,21 @@ but four of the fixes introduced regressions of their own. Those four
 are the top of the list and were **fixed on this branch after the
 review** (status noted per finding).
 
+*Second pass (same day):* the remaining open findings were addressed
+too. 5 (env-var warning scoped to when the var actually decides, once
+per process), 6 (`disable=True` iterates empty again), 7 (iterator
+ownership decided eagerly at `iter()` time; the iter-then-enter
+ordering is documented as unsupported), 8 (`""` instead of `None` when
+clearing a subtitle), 9 (no "Done" after `fail()`), 11 (documented as
+breaking in the new `CHANGELOG.md`), 12 (`[done]` only on clean exit),
+13 (PEP 562 lazy `__version__`, import back to ~4 ms), 15 (collection
+argument dropped). Three cut items rode along: `backend=""` means
+auto-detect again, backend validation is one `_validate_backend()`
+helper, and `_VALID_BACKENDS` is now derived from the `Environment`
+literal. Still open: finding 7's iter-then-enter ordering (documented
+instead), the pre-enter badge/log quirks, and the re-iteration
+overshoot.
+
 ## Findings (most severe first)
 
 ### 1. Valid-but-uninstalled `EVERBAR_BACKEND` crashes every `Progress()` — CONFIRMED, **fixed**
@@ -74,7 +89,7 @@ fallback backends", which both produce visible output.
 **Fix applied:** `add_task(start=False)` + `start_task()` in
 `__enter__`; comment and module docstring corrected.
 
-### 5. `EVERBAR_BACKEND` warning fires when irrelevant and crashes under `-W error` — CONFIRMED, open
+### 5. `EVERBAR_BACKEND` warning fires when irrelevant and crashes under `-W error` — CONFIRMED, **fixed**
 
 `src/everbar/_progress.py:119`. The unknown-name warning is emitted
 before precedence is applied, so it fires even when `backend=` wins and
@@ -83,14 +98,14 @@ CI/pytest) it raises — the exact crash the adjacent comment claims to
 prevent. Validate only when the env var actually decides, or gate
 once-per-process.
 
-### 6. `disable=True` no longer suppresses the no-iterable `TypeError` — CONFIRMED, open
+### 6. `disable=True` no longer suppresses the no-iterable `TypeError` — CONFIRMED, **fixed**
 
 `src/everbar/_progress.py:175`. The facade's new `TypeError` fires
 before the backend is consulted, so `list(Progress(total=n,
 disable=True))` — an empty loop on main — now raises. `disable`
 promised "render nothing", not "change control flow".
 
-### 7. Entered-state machine has holes in both directions — CONFIRMED, open (retained from main)
+### 7. Entered-state machine has holes in both directions — CONFIRMED, **partially fixed**
 
 `src/everbar/_backends.py:111`. The `if self._entered` check sits inside
 a generator (runs at first `next()`, not at `iter()`), and `__enter__`
@@ -101,14 +116,14 @@ consumed after it re-enters the closed backend for a full second
 (`RuntimeError` mid-loop on marimo). The branch fixed the common case;
 the new docstring makes the remaining holes contract violations.
 
-### 8. Marimo bar mode can't clear a postfix when no unit is set — CONFIRMED, open (pre-existing)
+### 8. Marimo bar mode can't clear a postfix when no unit is set — CONFIRMED, **fixed**
 
 `src/everbar/_backends.py:419`. `_bar_subtitle()` returns `None` when
 unit and postfix are empty, and marimo treats `subtitle=None` as "leave
 unchanged" — so `set_postfix()` to clear leaves the stale value rendered
 forever (verified). Send `""` when clearing.
 
-### 9. Marimo spinner announces "Done" after `fail()` — CONFIRMED, open (pre-existing)
+### 9. Marimo spinner announces "Done" after `fail()` — CONFIRMED, **fixed**
 
 `src/everbar/_backends.py:380`. `__exit__` appends "Done — …" whenever
 `exc_type is None`, ignoring `self._failing` — the cell shows both the
@@ -128,7 +143,7 @@ for `iterable=None` makes an `is None` guard free.
 finding 2 uses `is None`, removing the truthiness check from all
 iterating backends (NullBackend's copy corrected too).
 
-### 11. `jupyter_qt` removal is a hard compat break — CONFIRMED, open (accept or deprecate)
+### 11. `jupyter_qt` removal is a hard compat break — CONFIRMED, **resolved by documentation**
 
 `src/everbar/_progress.py:109`. A previously documented, working backend
 name now raises `ValueError` at construction with no deprecation path
@@ -136,14 +151,14 @@ name now raises `ValueError` at construction with no deprecation path
 call it out as breaking in the changelog, or accept the name as an alias
 for the std tqdm backend for one release.
 
-### 12. `break` logs a `[done]` success marker — CONFIRMED, open (retained from main)
+### 12. `break` logs a `[done]` success marker — CONFIRMED, **fixed**
 
 `src/everbar/_backends.py:114`. Abandoning iteration drives `__exit__`
 via `GeneratorExit`, so the fallback prints `[done] 1/5 (20%)` for an
 aborted loop (verified) — a success marker in CI logs; deferred to an
 arbitrary GC point on PyPy.
 
-### 13. Eager version lookup makes `import everbar` ~8–13× slower — CONFIRMED, open
+### 13. Eager version lookup makes `import everbar` ~8–13× slower — CONFIRMED, **fixed**
 
 `src/everbar/__init__.py:17`. Measured: ~3–5 ms → ~25–38 ms; the
 `importlib.metadata` chain is ~75–85 % of total import cost, paid by
@@ -161,7 +176,7 @@ copy, so the pattern was extracted into a shared `_IterUpdatingMixin`
 (the consolidation was verified against the full test suite during
 review).
 
-### 15. Marimo collection argument is dead weight — CONFIRMED, open
+### 15. Marimo collection argument is dead weight — CONFIRMED, **fixed**
 
 `src/everbar/_backends.py:348`. Since this branch drives iteration
 itself, marimo uses the passed collection for nothing everbar exercises

@@ -1,8 +1,5 @@
 """everbar — a progress bar that works everywhere."""
 
-from importlib.metadata import PackageNotFoundError
-from importlib.metadata import version as _version
-
 from everbar._detect import Environment, detect_environment
 from everbar._progress import Progress, set_default_backend
 
@@ -13,7 +10,18 @@ __all__ = [
     "set_default_backend",
 ]
 
-try:
-    __version__ = _version("everbar")
-except PackageNotFoundError:  # pragma: no cover — running from a source tree
-    __version__ = "0.0.0+unknown"
+
+def __getattr__(name: str) -> str:
+    # PEP 562: resolve __version__ lazily. The importlib.metadata import
+    # chain is ~85% of the package's import cost, and most consumers
+    # never read the version.
+    if name == "__version__":
+        from importlib.metadata import PackageNotFoundError, version
+
+        try:
+            v = version("everbar")
+        except PackageNotFoundError:  # pragma: no cover — source tree
+            v = "0.0.0+unknown"
+        globals()["__version__"] = v  # cache for subsequent access
+        return v
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -5,6 +5,7 @@ spam the terminal during CI.
 """
 
 import io
+import warnings
 
 import pytest
 
@@ -253,6 +254,9 @@ def test_set_default_backend_rejects_unknown_name():
 
 
 def test_unknown_env_var_warns_and_falls_back_to_detection(monkeypatch):
+    from everbar import _progress
+
+    monkeypatch.setattr(_progress, "_warned_env_values", set())
     monkeypatch.setenv("EVERBAR_BACKEND", "bogus")
     with pytest.warns(UserWarning, match="EVERBAR_BACKEND"):
         p = Progress([1, 2, 3])
@@ -405,3 +409,70 @@ def test_rich_task_clock_starts_at_enter():
     with bar:
         assert bar._progress.tasks[bar._task_id].start_time is not None
         assert bar._progress.tasks[bar._task_id].completed == 1
+
+
+def test_env_var_ignored_when_backend_argument_wins(monkeypatch, recwarn):
+    """Regression: an invalid EVERBAR_BACKEND warned even when backend=
+    won precedence and the env var was never consulted."""
+    monkeypatch.setenv("EVERBAR_BACKEND", "bogus")
+    p = Progress([1, 2], backend="non_tty")
+    assert isinstance(p._impl, FallbackBackend)
+    assert not [w for w in recwarn if "EVERBAR_BACKEND" in str(w.message)]
+
+
+def test_env_var_warning_fires_once_per_process(monkeypatch):
+    """Regression: a stale EVERBAR_BACKEND warned on every construction,
+    flooding logs (and crashing repeatedly under -W error)."""
+    from everbar import _progress
+
+    monkeypatch.setattr(_progress, "_warned_env_values", set())
+    monkeypatch.setenv("EVERBAR_BACKEND", "bogus_once")
+    with pytest.warns(UserWarning, match="EVERBAR_BACKEND"):
+        Progress([1], backend=None)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        Progress([1], backend=None)  # second construction must not warn
+
+
+def test_disabled_bare_progress_iterates_empty():
+    """Regression: the no-iterable TypeError also fired with disable=True,
+    where it previously yielded nothing — disable must not change
+    control flow."""
+    assert list(Progress(total=5, disable=True)) == []
+
+
+def test_iterator_created_inside_with_does_not_reenter_after_exit():
+    """Regression: an iterator created while entered but consumed after
+    the with-block re-entered the closed backend, emitting a second
+    entry/done lifecycle."""
+    buf = io.StringIO()
+    with Progress(
+        [1, 2, 3], backend="non_tty", min_interval=0.0, stream=buf
+    ) as bar:
+        it = iter(bar)
+    assert list(it) == [1, 2, 3]
+    output = buf.getvalue()
+    # One entry line and one [done] line, both from the with-block; the
+    # late consumption must not re-enter and start a second lifecycle.
+    assert output.count("[progress] 0/3") == 1
+    assert output.count("[done]") == 1
+
+
+def test_break_does_not_log_done():
+    """Regression: abandoning iteration (break) logged a '[done]' success
+    marker for an aborted loop."""
+    buf = io.StringIO()
+    for _ in Progress(
+        [1, 2, 3], backend="non_tty", min_interval=0.0, stream=buf
+    ):
+        break
+    output = buf.getvalue()
+    assert "[progress]" in output
+    assert "[done]" not in output
+
+
+def test_empty_string_backend_means_auto_detect():
+    """Compat: a falsy backend (e.g. an argparse default of '') meant
+    auto-detect before validation was added; '' must not raise."""
+    p = Progress([1, 2], backend="")
+    assert p._impl is not None

@@ -3,9 +3,9 @@
 import os
 import warnings
 from collections.abc import Iterable, Iterator
-from typing import Any, Generic, Self, TypeVar, overload
+from typing import Any, Generic, Self, TypeVar, get_args, overload
 
-from everbar._detect import detect_environment
+from everbar._detect import Environment, detect_environment
 
 T = TypeVar("T")
 
@@ -14,9 +14,22 @@ _DEFAULT_BACKEND: str | None = None
 _NOTEBOOK_ENVS = {"jupyter", "colab", "kaggle", "vscode_notebook", "databricks"}
 _TQDM_STD_ENVS = {"terminal", "ipython_terminal", "spyder"}
 
-_VALID_BACKENDS = frozenset(
-    {"marimo", "rich", "pyodide", "non_tty"} | _NOTEBOOK_ENVS | _TQDM_STD_ENVS
-)
+# Every detectable environment is also a valid explicit backend name,
+# plus the opt-in "rich" backend. Derived from the Environment literal
+# so the two can't silently drift apart.
+_VALID_BACKENDS = frozenset(get_args(Environment)) | {"rich"}
+_VALID_LIST = ", ".join(sorted(_VALID_BACKENDS))
+
+# EVERBAR_BACKEND values already warned about — one warning per process
+# per value, so a stale deploy-time setting can't flood logs.
+_warned_env_values: set[str] = set()
+
+
+def _validate_backend(name: str) -> None:
+    if name not in _VALID_BACKENDS:
+        raise ValueError(
+            f"unknown backend {name!r}; valid backends: {_VALID_LIST}"
+        )
 
 
 def set_default_backend(name: str | None) -> None:
@@ -30,11 +43,8 @@ def set_default_backend(name: str | None) -> None:
     Raises:
         ValueError: If ``name`` is not a known backend.
     """
-    if name is not None and name not in _VALID_BACKENDS:
-        raise ValueError(
-            f"unknown backend {name!r}; valid backends: "
-            f"{', '.join(sorted(_VALID_BACKENDS))}"
-        )
+    if name is not None:
+        _validate_backend(name)
     global _DEFAULT_BACKEND  # noqa: PLW0603 — module-level pin is the API
     _DEFAULT_BACKEND = name
 
@@ -106,21 +116,28 @@ class Progress(Generic[T]):
         unit: str | None = None,
         **kwargs: Any,
     ) -> None:
-        if backend is not None and backend not in _VALID_BACKENDS:
-            raise ValueError(
-                f"unknown backend {backend!r}; valid backends: "
-                f"{', '.join(sorted(_VALID_BACKENDS))}"
-            )
+        # Falsy backend ("" from an argparse/config default) means
+        # auto-detect, matching the old or-chain semantics.
+        if backend:
+            _validate_backend(backend)
 
-        env_backend = os.environ.get("EVERBAR_BACKEND")
-        if env_backend and env_backend not in _VALID_BACKENDS:
+        env_backend = os.environ.get("EVERBAR_BACKEND") or None
+        if (
+            not backend
+            and env_backend is not None
+            and env_backend not in _VALID_BACKENDS
+        ):
             # Warn-and-ignore rather than raise: a stale deploy-time env
-            # var shouldn't crash scripts that never asked for it.
-            warnings.warn(
-                f"ignoring EVERBAR_BACKEND={env_backend!r}: not a known "
-                f"backend (valid: {', '.join(sorted(_VALID_BACKENDS))})",
-                stacklevel=2,
-            )
+            # var shouldn't crash scripts that never asked for it. Only
+            # consulted when backend= doesn't win precedence, and warned
+            # about once per process per value.
+            if env_backend not in _warned_env_values:
+                _warned_env_values.add(env_backend)
+                warnings.warn(
+                    f"ignoring EVERBAR_BACKEND={env_backend!r}: not a "
+                    f"known backend (valid: {_VALID_LIST})",
+                    stacklevel=2,
+                )
             env_backend = None
 
         self._iterable = iterable
@@ -128,12 +145,13 @@ class Progress(Generic[T]):
         self._desc = desc
         self._unit = unit
         self._kwargs = kwargs
+        self._disabled = disable
 
         chosen = backend or env_backend or _DEFAULT_BACKEND
         # backend= and set_default_backend() are code-level intent whose
         # missing dependencies should raise; EVERBAR_BACKEND is deploy-time
         # config, which degrades to the fallback with a warning instead.
-        self._from_env = backend is None and bool(env_backend)
+        self._from_env = not backend and env_backend is not None
         self._explicit = chosen is not None and not self._from_env
         self._env: str = chosen or detect_environment()
         self._impl = self._make_impl(disable=disable)
@@ -184,6 +202,11 @@ class Progress(Generic[T]):
 
     def __iter__(self) -> Iterator[T]:
         if self._iterable is None:
+            if self._disabled:
+                # disable=True promises "render nothing", not "change
+                # control flow" — iterating a bare disabled bar stays
+                # an empty loop.
+                return iter(())
             raise TypeError(
                 "this Progress was constructed without an iterable; "
                 "drive it manually with update() instead"

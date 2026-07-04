@@ -212,3 +212,33 @@ def test_calls_after_context_exit_are_noops():
     bar.set_postfix(loss=0.5)
     bar.fail()
     assert bar._n == 2
+
+
+def test_bar_set_postfix_clears_without_unit():
+    """Regression: clearing the postfix with no unit sent subtitle=None,
+    which marimo treats as 'leave unchanged' — the stale value stuck."""
+    bar = MarimoBackend(total=3)
+    bar.set_postfix(loss=0.5)
+    assert bar._inner.progress.subtitle == "loss=0.5"
+    bar.set_postfix()
+    assert bar._inner.progress.subtitle == ""
+
+
+def test_spinner_exit_after_fail_does_not_announce_done(monkeypatch):
+    """Regression: a failing spinner still appended 'Done — ...' on clean
+    exit, contradicting the FAILED badge."""
+    from types import SimpleNamespace
+
+    bar = MarimoBackend(desc="x")  # spinner mode
+    recorded: list[tuple[str, str]] = []
+    stub = SimpleNamespace(
+        output=SimpleNamespace(append=recorded.append),
+        md=lambda text: ("md", text),
+        Html=lambda text: ("html", text),
+    )
+    monkeypatch.setattr(bar, "_mo", stub)
+    with bar:
+        bar.update(1)
+        bar.fail()
+    kinds = [kind for kind, _ in recorded]
+    assert kinds == ["html"]  # the FAILED badge only, no Done markdown
