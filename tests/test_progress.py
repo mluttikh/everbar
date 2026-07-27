@@ -341,12 +341,14 @@ def test_env_var_backend_with_missing_dep_warns_and_falls_back(monkeypatch):
     """Regression: EVERBAR_BACKEND=rich without rich installed raised
     ImportError from every Progress construction; deploy-time config
     must degrade to the fallback (with a warning), not crash."""
-    from everbar import _backends
+    from everbar import _backends, _progress
 
     class _Unavailable:
         def __init__(self, *args, **kwargs):
             raise ImportError("No module named 'rich'")
 
+    # The warning is deduped per process, so start from a clean set.
+    monkeypatch.setattr(_progress, "_warned_env_values", set())
     monkeypatch.setenv("EVERBAR_BACKEND", "rich")
     monkeypatch.setattr(_backends, "RichBackend", _Unavailable)
     with pytest.warns(UserWarning, match="EVERBAR_BACKEND"):
@@ -432,6 +434,28 @@ def test_env_var_warning_fires_once_per_process(monkeypatch):
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         Progress([1], backend=None)  # second construction must not warn
+
+
+def test_env_var_missing_dep_warning_fires_once_per_process(monkeypatch):
+    """Regression: only the unknown-name warning was deduped, so a valid
+    but uninstalled EVERBAR_BACKEND warned on every construction — and
+    under -W error raised every time, re-opening the crash this path
+    exists to prevent."""
+    from everbar import _backends, _progress
+
+    class _Unavailable:
+        def __init__(self, *args, **kwargs):
+            raise ImportError("No module named 'rich'")
+
+    monkeypatch.setattr(_progress, "_warned_env_values", set())
+    monkeypatch.setattr(_backends, "RichBackend", _Unavailable)
+    monkeypatch.setenv("EVERBAR_BACKEND", "rich")
+    with pytest.warns(UserWarning, match="dependencies are not installed"):
+        Progress([1])
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        p = Progress([1])  # second construction must not warn
+    assert isinstance(p._impl, FallbackBackend)
 
 
 def test_disabled_bare_progress_iterates_empty():

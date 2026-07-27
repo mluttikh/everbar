@@ -21,8 +21,24 @@ _VALID_BACKENDS = frozenset(get_args(Environment)) | {"rich"}
 _VALID_LIST = ", ".join(sorted(_VALID_BACKENDS))
 
 # EVERBAR_BACKEND values already warned about — one warning per process
-# per value, so a stale deploy-time setting can't flood logs.
+# per value, so a stale deploy-time setting can't flood logs or, under
+# -W error, crash every construction. Both warning paths below share the
+# set: a value is either a known backend or not, so it can only ever
+# take one of them.
 _warned_env_values: set[str] = set()
+
+
+def _warn_once_per_env_value(
+    value: str, message: str, *, stacklevel: int
+) -> None:
+    """Warn about an ``EVERBAR_BACKEND`` value at most once per process.
+
+    ``stacklevel`` is counted from the caller, as for ``warnings.warn``.
+    """
+    if value in _warned_env_values:
+        return
+    _warned_env_values.add(value)
+    warnings.warn(message, stacklevel=stacklevel + 1)
 
 
 def _validate_backend(name: str) -> None:
@@ -131,13 +147,12 @@ class Progress(Generic[T]):
             # var shouldn't crash scripts that never asked for it. Only
             # consulted when backend= doesn't win precedence, and warned
             # about once per process per value.
-            if env_backend not in _warned_env_values:
-                _warned_env_values.add(env_backend)
-                warnings.warn(
-                    f"ignoring EVERBAR_BACKEND={env_backend!r}: not a "
-                    f"known backend (valid: {_VALID_LIST})",
-                    stacklevel=2,
-                )
+            _warn_once_per_env_value(
+                env_backend,
+                f"ignoring EVERBAR_BACKEND={env_backend!r}: not a "
+                f"known backend (valid: {_VALID_LIST})",
+                stacklevel=2,
+            )
             env_backend = None
 
         self._iterable = iterable
@@ -191,7 +206,11 @@ class Progress(Generic[T]):
                     f"its dependencies are not installed: {e}"
                 ) from e
             if self._from_env:
-                warnings.warn(
+                # Once per process, like the unknown-name warning: this
+                # path exists so deploy-time config degrades instead of
+                # crashing, which repeating under -W error would undo.
+                _warn_once_per_env_value(
+                    self._env,
                     f"EVERBAR_BACKEND={self._env!r} is set but its "
                     f"dependencies are not installed; using the text "
                     f"fallback: {e}",

@@ -15,7 +15,8 @@
 - Requesting a backend in code (`backend=` or `set_default_backend`)
   whose dependency is not installed raises `ImportError` instead of
   silently degrading. `EVERBAR_BACKEND` degrades to the text fallback
-  with a warning; auto-detection degrades silently.
+  with a warning (once per process per value, like the unknown-name
+  warning above); auto-detection degrades silently.
 - Iterating a `Progress` constructed without an iterable raises
   `TypeError` (unless `disable=True`, which stays an empty loop).
 
