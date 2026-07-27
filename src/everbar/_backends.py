@@ -123,6 +123,7 @@ class FallbackBackend(_IterUpdatingMixin):
         iterable: Iterable[Any] | None = None,
         total: int | None = None,
         desc: str = "",
+        *,
         min_interval: float = 2.0,
         stream: Any = None,
         unit: str | None = None,
