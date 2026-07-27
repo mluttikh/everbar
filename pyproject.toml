@@ -74,6 +74,12 @@ extend-exclude = ["notebooks", "examples"]
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+# Ruff >=0.16 formats Python inside Markdown fences. Opt the docs out:
+# README's override snippets align their trailing comments across a
+# ```python / ```bash / ```python trio, and ruff can only touch the
+# Python ones — so formatting them permanently breaks the alignment it
+# can't restore. The snippets are already valid, idiomatic Python.
+exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = [
