@@ -152,3 +152,93 @@ def test_spinner_unit_without_postfix():
     with MarimoBackend(desc="x", unit="rows") as bar:
         bar.update(7)
     assert bar._inner.spinner.subtitle == "7 rows"
+
+
+def test_bar_iterator_form_set_postfix_with_kept_handle():
+    """Regression: set_postfix during iterator-form iteration raised
+    AttributeError because the tracker was never set."""
+    bar = MarimoBackend([1, 2, 3], desc="x")
+    it = iter(bar)
+    next(it)
+    bar.set_postfix(loss=0.1)
+    assert "loss=0.1" in bar._inner.progress.subtitle
+    assert list(it) == [2, 3]
+    assert bar._n == 3
+
+
+def test_bar_iterator_form_fail_sets_title():
+    """Regression: fail() during iterator-form iteration was silently
+    dropped by the tracker-is-None guard."""
+    bar = MarimoBackend([1, 2, 3], desc="x")
+    it = iter(bar)
+    next(it)
+    bar.fail()
+    assert bar._inner.progress.title == "[FAILING] x"
+
+
+def test_bar_update_before_enter_records_progress():
+    bar = MarimoBackend(total=5, desc="x")
+    bar.update(2)
+    assert bar._inner.progress.current == 2
+
+
+def test_spinner_updates_before_enter_sync_on_entry():
+    bar = MarimoBackend(desc="x")
+    bar.update(2)  # no tracker yet — must not crash
+    bar.set_postfix(loss=0.5)
+    with bar:
+        subtitle = bar._inner.spinner.subtitle
+    assert "2 items" in subtitle
+    assert "loss=0.5" in subtitle
+
+
+def test_calls_after_iteration_completes_are_noops():
+    """Regression: the eagerly-grabbed bar-mode tracker stayed live after
+    marimo closed the bar on exit, so fail()/set_postfix()/update() in
+    summary code after the loop raised marimo's RuntimeError."""
+    bar = MarimoBackend([1, 2, 3], desc="x")
+    assert list(bar) == [1, 2, 3]
+    bar.fail()  # must not raise; badge is still announced
+    bar.set_postfix(loss=0.5)
+    bar.update(1)
+    assert bar._failing
+    assert bar._n == 4
+
+
+def test_calls_after_context_exit_are_noops():
+    with MarimoBackend(total=3, desc="x") as bar:
+        bar.update(1)
+    bar.update(1)
+    bar.set_postfix(loss=0.5)
+    bar.fail()
+    assert bar._n == 2
+
+
+def test_bar_set_postfix_clears_without_unit():
+    """Regression: clearing the postfix with no unit sent subtitle=None,
+    which marimo treats as 'leave unchanged' — the stale value stuck."""
+    bar = MarimoBackend(total=3)
+    bar.set_postfix(loss=0.5)
+    assert bar._inner.progress.subtitle == "loss=0.5"
+    bar.set_postfix()
+    assert bar._inner.progress.subtitle == ""
+
+
+def test_spinner_exit_after_fail_does_not_announce_done(monkeypatch):
+    """Regression: a failing spinner still appended 'Done — ...' on clean
+    exit, contradicting the FAILED badge."""
+    from types import SimpleNamespace
+
+    bar = MarimoBackend(desc="x")  # spinner mode
+    recorded: list[tuple[str, str]] = []
+    stub = SimpleNamespace(
+        output=SimpleNamespace(append=recorded.append),
+        md=lambda text: ("md", text),
+        Html=lambda text: ("html", text),
+    )
+    monkeypatch.setattr(bar, "_mo", stub)
+    with bar:
+        bar.update(1)
+        bar.fail()
+    kinds = [kind for kind, _ in recorded]
+    assert kinds == ["html"]  # the FAILED badge only, no Done markdown

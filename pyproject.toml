@@ -37,6 +37,7 @@ all = ["tqdm>=4.65", "rich>=13.0", "ipywidgets>=8.0", "marimo>=0.10"]
 dev = [
     "pytest>=7.0",
     "ruff>=0.6",
+    "mypy>=1.10",
     "tqdm>=4.65",
     "rich>=13.0",
     "ipywidgets>=8.0",
@@ -53,6 +54,17 @@ packages = ["src/everbar"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
+[tool.mypy]
+files = ["src", "tests"]
+# Check bodies of unannotated functions too — the tests are deliberately
+# light on annotations but still exercise the typed public API.
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+# tqdm ships no py.typed marker, so mypy can't see its types.
+module = "tqdm.*"
+ignore_missing_imports = true
+
 [tool.ruff]
 line-length = 80
 target-version = "py311"
@@ -62,6 +74,12 @@ extend-exclude = ["notebooks", "examples"]
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+# Ruff >=0.16 formats Python inside Markdown fences. Opt the docs out:
+# README's override snippets align their trailing comments across a
+# ```python / ```bash / ```python trio, and ruff can only touch the
+# Python ones — so formatting them permanently breaks the alignment it
+# can't restore. The snippets are already valid, idiomatic Python.
+exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = [
