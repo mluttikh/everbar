@@ -3,9 +3,20 @@
 import os
 import warnings
 from collections.abc import Iterable, Iterator
-from typing import Any, Generic, Self, TypeVar, get_args, overload
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Generic,
+    Self,
+    TypeVar,
+    get_args,
+    overload,
+)
 
 from everbar._detect import Environment, detect_environment
+
+if TYPE_CHECKING:
+    from everbar._backends import Backend
 
 T = TypeVar("T")
 
@@ -171,7 +182,7 @@ class Progress(Generic[T]):
         self._env: str = chosen or detect_environment()
         self._impl = self._make_impl(disable=disable)
 
-    def _make_impl(self, *, disable: bool) -> Any:
+    def _make_impl(self, *, disable: bool) -> "Backend":
         from everbar import _backends
 
         if disable:

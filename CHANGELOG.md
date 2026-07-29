@@ -43,6 +43,19 @@
   transition instead of every call.
 - Iterables that reject truthiness testing (e.g. numpy arrays) iterate
   correctly on every backend.
+- A known total of `0` (e.g. `Progress([])`) is reported as complete —
+  `0/0 (100%)` — instead of being mistaken for an unknown total and
+  logged as `0/? (?)`.
+- Rich: `unit` is rendered verbatim. It was baked into the column's
+  format string and parsed as console markup, so a unit containing
+  braces (`unit="{files}"`) raised `KeyError` and one containing
+  brackets (`unit="[bold]B"`) was silently swallowed as styling.
+- Iterating a bar twice restarts it instead of running past the total
+  (`list(bar); list(bar)` ended at `6/3 (200%)`). On marimo this also
+  fixes an outright crash — its indicators reject updates once closed,
+  so a second pass raised `RuntimeError`; tqdm bars, which ignore
+  updates after `close()`, silently stayed at `0`. Manual `update()`
+  calls made before the first iteration still count.
 - First-call latency: environment detection no longer imports marimo or
   IPython in plain scripts (~325 ms → ~20 ms with all extras installed).
 
@@ -53,3 +66,7 @@
 - `unit=` to label what's being counted.
 - `Environment` exported for typing against `detect_environment()`.
 - mypy in CI, making the `assert_type` typing contracts live.
+- An internal `Backend` Protocol capturing the five-method backend
+  contract. `Progress` now delegates through it instead of through
+  `Any`, so a backend that drifts out of shape is caught by mypy rather
+  than at runtime in whichever environment selects it.

@@ -200,18 +200,46 @@ def test_rich_unit_does_not_crash():
         bar.update(3)
 
 
+def _render_rich(bar, buf):
+    """Return the last rendered line of a rich bar."""
+    lines = [line for line in buf.getvalue().splitlines() if line.strip()]
+    return lines[-1] if lines else ""
+
+
 def test_rich_unit_added_as_column():
     from rich.console import Console
     from rich.progress import TextColumn
 
     console = Console(file=io.StringIO(), force_terminal=False)
     bar = RichBackend(total=3, desc="x", unit="files", console=console)
+    # The unit is rendered from a task field, so the column carries the
+    # field reference and the value lives on the task.
     unit_columns = [
         c
         for c in bar._progress.columns
-        if isinstance(c, TextColumn) and c.text_format == "files"
+        if isinstance(c, TextColumn) and c.text_format == "{task.fields[unit]}"
     ]
     assert len(unit_columns) == 1
+    assert bar._progress.tasks[bar._task_id].fields["unit"] == "files"
+
+
+@pytest.mark.parametrize(
+    "unit",
+    ["files", "{files}", "{task.description}", "[bold]B", "[/]x"],
+)
+def test_rich_unit_is_rendered_literally(unit):
+    """Regression: the unit was baked into TextColumn's format string and
+    parsed as markup, so a unit containing braces raised KeyError (or
+    silently interpolated task state) and one containing [...] was eaten
+    as styling. It is caller data and must render verbatim."""
+    from rich.console import Console
+
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=False, width=100)
+    bar = RichBackend(total=3, desc="d", unit=unit, console=console)
+    with bar:
+        bar.update(1)
+    assert unit in _render_rich(bar, buf)
 
 
 def test_tqdm_forwards_unit():
@@ -500,3 +528,94 @@ def test_empty_string_backend_means_auto_detect():
     auto-detect before validation was added; '' must not raise."""
     p = Progress([1, 2], backend="")
     assert p._impl is not None
+
+
+def test_known_zero_total_is_complete_not_unknown():
+    """Regression: `if self._total:` treated a known total of 0 (an empty
+    collection) as an unknown total, so `Progress([])` logged
+    '0/? (?)' instead of reporting completion."""
+    buf = io.StringIO()
+    with Progress([], backend="non_tty", min_interval=0.0, stream=buf):
+        pass
+    output = buf.getvalue()
+    assert "0/0 (100%)" in output
+    assert "?" not in output
+
+
+def test_unknown_total_still_renders_as_unknown():
+    """The zero-total fix must not swallow the genuinely-unknown case."""
+    buf = io.StringIO()
+    bar = Progress(
+        (x for x in range(3)),
+        backend="non_tty",
+        min_interval=0.0,
+        stream=buf,
+    )
+    assert list(bar) == [0, 1, 2]
+    assert "3/? (?)" in buf.getvalue()
+
+
+def test_reiteration_restarts_instead_of_overshooting():
+    """Regression: `_n` was never reset, so iterating a bar twice ended at
+    '6/3 (200%)'."""
+    buf = io.StringIO()
+    bar = Progress([1, 2, 3], backend="non_tty", min_interval=0.0, stream=buf)
+    assert list(bar) == [1, 2, 3]
+    assert list(bar) == [1, 2, 3]
+    assert "6/3" not in buf.getvalue()
+    assert buf.getvalue().strip().splitlines()[-1].count("3/3 (100%)") == 1
+
+
+def test_reiteration_after_break_also_restarts():
+    """The reset is armed on entry, not completion — an abandoned loop
+    unwinds via GeneratorExit, so a completion-time flag would be skipped
+    and the next run would resume mid-count."""
+    buf = io.StringIO()
+    bar = Progress(
+        [1, 2, 3, 4], backend="non_tty", min_interval=0.0, stream=buf
+    )
+    for _ in bar:
+        break
+    assert list(bar) == [1, 2, 3, 4]
+    assert "4/4 (100%)" in buf.getvalue()
+    assert "5/4" not in buf.getvalue()
+
+
+def test_first_iteration_keeps_pre_iteration_updates():
+    """The reset must apply only from the second owned run onwards, or
+    manual update() calls made before iterating would be discarded."""
+    buf = io.StringIO()
+    bar = Progress(
+        [1, 2, 3], total=13, backend="non_tty", min_interval=0.0, stream=buf
+    )
+    bar.update(10)
+    assert list(bar) == [1, 2, 3]
+    assert "13/13 (100%)" in buf.getvalue()
+
+
+def test_reiteration_inside_with_block_does_not_reset():
+    """A caller-owned context is one run: the inner loops share a count."""
+    buf = io.StringIO()
+    with Progress(
+        [1, 2], total=4, backend="non_tty", min_interval=0.0, stream=buf
+    ) as bar:
+        assert list(bar) == [1, 2]
+        assert list(bar) == [1, 2]
+    assert "4/4 (100%)" in buf.getvalue()
+
+
+def test_rich_reiteration_restarts():
+    from rich.console import Console
+
+    console = Console(file=io.StringIO(), force_terminal=False)
+    bar = RichBackend([1, 2, 3], desc="x", console=console)
+    list(bar)
+    list(bar)
+    assert bar._progress.tasks[bar._task_id].completed == 3
+
+
+def test_tqdm_reiteration_restarts():
+    bar = TqdmBackend([1, 2, 3], file=io.StringIO())
+    list(bar)
+    list(bar)
+    assert bar._inner.n == 3

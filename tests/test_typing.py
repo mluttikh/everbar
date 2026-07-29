@@ -25,3 +25,31 @@ def test_iteration_preserves_str_type() -> None:
     items: list[str] = ["a", "b"]
     for s in Progress(items, backend="non_tty"):
         assert_type(s, str)
+
+
+def test_backends_satisfy_the_backend_protocol() -> None:
+    """The facade delegates through ``Backend``; a backend that drifts out
+    of shape must fail type-checking rather than at runtime in whichever
+    environment happens to select it."""
+    import io
+
+    from rich.console import Console
+
+    from everbar._backends import (
+        Backend,
+        FallbackBackend,
+        NullBackend,
+        RichBackend,
+        TqdmBackend,
+    )
+
+    # Quiet sinks — these construct real bars, which would otherwise
+    # write to the terminal during CI.
+    backends: list[Backend] = [
+        NullBackend(),
+        FallbackBackend(stream=io.StringIO()),
+        RichBackend(console=Console(file=io.StringIO())),
+        TqdmBackend(file=io.StringIO()),
+    ]
+    for backend in backends:
+        assert hasattr(backend, "fail")

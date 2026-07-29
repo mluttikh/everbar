@@ -242,3 +242,33 @@ def test_spinner_exit_after_fail_does_not_announce_done(monkeypatch):
         bar.fail()
     kinds = [kind for kind, _ in recorded]
     assert kinds == ["html"]  # the FAILED badge only, no Done markdown
+
+
+def test_reiteration_rebuilds_the_indicator():
+    """Regression: marimo indicators are single-use — re-entering one after
+    exit raised 'cannot be updated after exiting'. A fresh run builds a
+    fresh indicator."""
+    bar = MarimoBackend([1, 2, 3], desc="x")
+    assert list(bar) == [1, 2, 3]
+    assert list(bar) == [1, 2, 3]
+    assert bar._n == 3
+    assert bar._inner.progress.current == 3
+
+
+def test_reiteration_keeps_failing_state_sticky():
+    bar = MarimoBackend([1, 2], desc="x")
+    list(bar)
+    bar.fail()
+    list(bar)
+    assert bar._failing is True
+
+
+def test_spinner_reiteration_restarts_count():
+    def gen():
+        yield from range(3)
+
+    bar = MarimoBackend(gen(), desc="x")
+    assert bar._mode == "spinner"
+    list(bar)
+    list(bar)  # generator is exhausted; count restarts and stays at 0
+    assert bar._n == 0
